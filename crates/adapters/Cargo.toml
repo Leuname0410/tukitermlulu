@@ -1,0 +1,10 @@
+[package]
+name = "tuki-adapters"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tuki-core = { path = "../core" }
+tuki-application = { path = "../application" }

@@ -3,5 +3,20 @@
 version = 4
 
 [[package]]
+name = "tuki-adapters"
+version = "0.1.0"
+dependencies = [
+ "tuki-application",
+ "tuki-core",
+]
+
+[[package]]
+name = "tuki-application"
+version = "0.1.0"
+dependencies = [
+ "tuki-core",
+]
+
+[[package]]
 name = "tuki-core"
 version = "0.1.0"
