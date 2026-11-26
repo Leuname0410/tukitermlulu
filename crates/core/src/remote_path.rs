@@ -120,4 +120,22 @@ mod tests {
         let path = RemotePath::new("/a").expect("ruta válida");
         assert_eq!(path.join(".."), Err(DomainError::InvalidRemotePath));
     }
+
+    #[test]
+    fn should_reject_empty_name_when_joining_name() {
+        let path = RemotePath::new("/a").expect("ruta válida");
+        assert_eq!(path.join(""), Err(DomainError::InvalidRemotePath));
+    }
+
+    #[test]
+    fn should_reject_current_directory_when_joining_name() {
+        let path = RemotePath::new("/a").expect("ruta válida");
+        assert_eq!(path.join("."), Err(DomainError::InvalidRemotePath));
+    }
+
+    #[test]
+    fn should_reject_backslash_when_joining_name() {
+        let path = RemotePath::new("/a").expect("ruta válida");
+        assert_eq!(path.join("..\\..\\x"), Err(DomainError::InvalidRemotePath));
+    }
 }
