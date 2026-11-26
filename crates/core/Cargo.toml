@@ -7,4 +7,12 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+mockall = { version = "0.13", optional = true }
 thiserror = "2"
+zeroize = "1"
+
+[features]
+mocks = ["dep:mockall"]
+
+[dev-dependencies]
+mockall = "0.13"
