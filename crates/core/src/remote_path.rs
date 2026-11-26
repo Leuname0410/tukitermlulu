@@ -1,5 +1,54 @@
 //! Value object de ruta remota, tal como la reporta el servidor.
 
+use crate::error::DomainError;
+
+/// Ruta remota POSIX o Windows, sin normalizar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemotePath(String);
+
+impl RemotePath {
+    /// Crea una ruta validando que no esté vacía ni contenga bytes NUL.
+    pub fn new(v: &str) -> Result<Self, DomainError> {
+        if v.is_empty() {
+            return Err(DomainError::EmptyRemotePath);
+        }
+        if v.contains('\0') {
+            return Err(DomainError::InvalidRemotePath);
+        }
+        Ok(Self(v.to_owned()))
+    }
+
+    /// Devuelve la ruta como cadena.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Devuelve el directorio padre, o `None` si la ruta es la raíz.
+    pub fn parent(&self) -> Option<RemotePath> {
+        let (before, _) = self.0.rsplit_once('/')?;
+        if before.is_empty() {
+            if self.0 == "/" {
+                return None;
+            }
+            return RemotePath::new("/").ok();
+        }
+        RemotePath::new(before).ok()
+    }
+
+    /// Añade un nombre a la ruta, rechazando separadores y `..`.
+    pub fn join(&self, name: &str) -> Result<RemotePath, DomainError> {
+        if name.contains('/') || name == ".." {
+            return Err(DomainError::InvalidRemotePath);
+        }
+        let joined = if self.0 == "/" {
+            format!("/{name}")
+        } else {
+            format!("{}/{name}", self.0)
+        };
+        RemotePath::new(&joined)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::RemotePath;
@@ -12,19 +61,28 @@ mod tests {
 
     #[test]
     fn should_reject_nul_byte_when_creating_remote_path() {
-        assert_eq!(RemotePath::new("/a\0b"), Err(DomainError::InvalidRemotePath));
+        assert_eq!(
+            RemotePath::new("/a\0b"),
+            Err(DomainError::InvalidRemotePath)
+        );
     }
 
     #[test]
     fn should_return_immediate_parent_when_path_has_nested_segments() {
         let path = RemotePath::new("/a/b").expect("ruta válida");
-        assert_eq!(path.parent().map(|p| p.as_str().to_owned()), Some("/a".to_owned()));
+        assert_eq!(
+            path.parent().map(|p| p.as_str().to_owned()),
+            Some("/a".to_owned())
+        );
     }
 
     #[test]
     fn should_return_root_when_path_is_directly_under_root() {
         let path = RemotePath::new("/a").expect("ruta válida");
-        assert_eq!(path.parent().map(|p| p.as_str().to_owned()), Some("/".to_owned()));
+        assert_eq!(
+            path.parent().map(|p| p.as_str().to_owned()),
+            Some("/".to_owned())
+        );
     }
 
     #[test]

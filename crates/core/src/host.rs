@@ -1,5 +1,83 @@
 //! Value objects de host: nombre, puerto y usuario.
 
+use crate::error::DomainError;
+
+/// Puerto TCP válido (1..=65535). Por defecto, 22.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Port(u16);
+
+impl Port {
+    /// Crea un puerto validando que esté en el rango permitido.
+    pub fn new(v: u16) -> Result<Self, DomainError> {
+        if v == 0 {
+            return Err(DomainError::InvalidPort);
+        }
+        Ok(Self(v))
+    }
+
+    /// Devuelve el valor numérico del puerto.
+    pub fn get(self) -> u16 {
+        self.0
+    }
+}
+
+impl Default for Port {
+    fn default() -> Self {
+        Self(22)
+    }
+}
+
+/// Nombre de host: DNS, IPv4 o IPv6 (con o sin corchetes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hostname(String);
+
+impl Hostname {
+    /// Crea un nombre de host recortando espacios y rechazando caracteres inválidos.
+    pub fn new(v: &str) -> Result<Self, DomainError> {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyHost);
+        }
+        if trimmed.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(DomainError::InvalidHost);
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// Devuelve el nombre de host como cadena.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Nombre de usuario del servidor remoto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Username(String);
+
+impl Username {
+    /// Crea un usuario validando que no esté vacío.
+    pub fn new(v: &str) -> Result<Self, DomainError> {
+        let trimmed = v.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyUsername);
+        }
+        Ok(Self(trimmed.to_owned()))
+    }
+
+    /// Devuelve el usuario como cadena.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Destino de conexión: nombre de host, puerto y usuario.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Host {
+    pub hostname: Hostname,
+    pub port: Port,
+    pub username: Username,
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Host, Hostname, Port, Username};
@@ -36,15 +114,18 @@ mod tests {
     #[test]
     fn should_accept_common_addresses_when_creating_hostname() {
         for value in ["example.com", "10.0.0.1", "::1", "[::1]"] {
-            assert_eq!(Hostname::new(value).map(|h| h.as_str()), Ok(value));
+            assert_eq!(
+                Hostname::new(value).map(|h| h.as_str().to_owned()),
+                Ok(value.to_owned())
+            );
         }
     }
 
     #[test]
     fn should_trim_surrounding_whitespace_when_creating_hostname() {
         assert_eq!(
-            Hostname::new("  example.com  ").map(|h| h.as_str()),
-            Ok("example.com")
+            Hostname::new("  example.com  ").map(|h| h.as_str().to_owned()),
+            Ok("example.com".to_owned())
         );
     }
 
@@ -55,7 +136,10 @@ mod tests {
 
     #[test]
     fn should_keep_name_when_creating_username() {
-        assert_eq!(Username::new("alice").map(|u| u.as_str()), Ok("alice"));
+        assert_eq!(
+            Username::new("alice").map(|u| u.as_str().to_owned()),
+            Ok("alice".to_owned())
+        );
     }
 
     #[test]

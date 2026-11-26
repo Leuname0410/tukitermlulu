@@ -28,7 +28,10 @@ mod tests {
             (DomainError::EmptyHost, "host must not be empty"),
             (DomainError::InvalidHost, "host contains invalid characters"),
             (DomainError::EmptyUsername, "username must not be empty"),
-            (DomainError::EmptyRemotePath, "remote path must not be empty"),
+            (
+                DomainError::EmptyRemotePath,
+                "remote path must not be empty",
+            ),
             (
                 DomainError::InvalidRemotePath,
                 "remote path must not contain NUL bytes",
