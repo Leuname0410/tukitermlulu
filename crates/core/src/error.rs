@@ -36,6 +36,12 @@ mod tests {
                 DomainError::InvalidRemotePath,
                 "remote path must not contain NUL bytes",
             ),
+            (DomainError::EmptyKeyPath, "key path must not be empty"),
+            (DomainError::EmptyName, "name must not be empty"),
+            (
+                DomainError::FolderCycle,
+                "a folder cannot be its own parent",
+            ),
         ];
 
         for (error, message) in cases {
