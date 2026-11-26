@@ -15,6 +15,12 @@ pub enum DomainError {
     EmptyRemotePath,
     #[error("remote path must not contain NUL bytes")]
     InvalidRemotePath,
+    #[error("key path must not be empty")]
+    EmptyKeyPath,
+    #[error("name must not be empty")]
+    EmptyName,
+    #[error("a folder cannot be its own parent")]
+    FolderCycle,
 }
 
 #[cfg(test)]

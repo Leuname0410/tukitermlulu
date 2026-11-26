@@ -1,5 +1,122 @@
 //! Entidades del gestor de sesiones: identificadores, carpetas y sesiones.
 
+use crate::auth::AuthMethod;
+use crate::error::DomainError;
+use crate::host::Host;
+
+/// Identificador opaco de una sesión.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SessionId(u64);
+
+impl SessionId {
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Identificador opaco de una carpeta.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FolderId(u64);
+
+impl FolderId {
+    pub fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Carpeta del gestor de sesiones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Folder {
+    pub id: FolderId,
+    pub name: String,
+    pub parent: Option<FolderId>,
+}
+
+impl Folder {
+    /// Crea una carpeta validando el nombre y que no sea su propio padre.
+    pub fn new(id: FolderId, name: &str, parent: Option<FolderId>) -> Result<Self, DomainError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyName);
+        }
+        if parent == Some(id) {
+            return Err(DomainError::FolderCycle);
+        }
+        Ok(Self {
+            id,
+            name: trimmed.to_owned(),
+            parent,
+        })
+    }
+}
+
+/// Sesión guardada del gestor. No contiene secretos, solo el método de autenticación.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Session {
+    pub id: SessionId,
+    pub name: String,
+    pub host: Host,
+    pub auth: AuthMethod,
+    pub folder: Option<FolderId>,
+}
+
+impl Session {
+    /// Crea una sesión validando que el nombre no esté vacío.
+    pub fn new(
+        id: SessionId,
+        name: &str,
+        host: Host,
+        auth: AuthMethod,
+        folder: Option<FolderId>,
+    ) -> Result<Self, DomainError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyName);
+        }
+        Ok(Self {
+            id,
+            name: trimmed.to_owned(),
+            host,
+            auth,
+            folder,
+        })
+    }
+
+    pub fn with_host(&self, host: Host) -> Self {
+        Self {
+            host,
+            ..self.clone()
+        }
+    }
+
+    pub fn with_auth(&self, auth: AuthMethod) -> Self {
+        Self {
+            auth,
+            ..self.clone()
+        }
+    }
+
+    /// Devuelve una sesión nueva con el nombre validado y recortado.
+    pub fn rename(&self, name: &str) -> Result<Self, DomainError> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyName);
+        }
+        Ok(Self {
+            name: trimmed.to_owned(),
+            ..self.clone()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Folder, FolderId, Session, SessionId};
@@ -45,7 +162,10 @@ mod tests {
     #[test]
     fn should_reject_self_parent_when_creating_folder() {
         let id = FolderId::new(1);
-        assert_eq!(Folder::new(id, "prod", Some(id)), Err(DomainError::FolderCycle));
+        assert_eq!(
+            Folder::new(id, "prod", Some(id)),
+            Err(DomainError::FolderCycle)
+        );
     }
 
     #[test]

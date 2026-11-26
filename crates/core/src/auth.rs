@@ -1,5 +1,38 @@
 //! Entidades de autenticación: referencias a llaves y método de autenticación.
 
+use crate::error::DomainError;
+
+/// Referencia local al archivo de llave. Nunca contiene la llave ni su passphrase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyRef {
+    path: String,
+}
+
+impl KeyRef {
+    pub fn new(path: &str) -> Result<Self, DomainError> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(DomainError::EmptyKeyPath);
+        }
+        Ok(Self {
+            path: trimmed.to_owned(),
+        })
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+}
+
+/// Método de autenticación de una sesión. Solo guarda banderas: los secretos van al `SecretStore`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthMethod {
+    /// Contraseña: `remember` indica si se guarda en el `SecretStore`.
+    Password { remember: bool },
+    /// Llave pública: `has_passphrase` solo indica si la llave está cifrada.
+    PublicKey { key: KeyRef, has_passphrase: bool },
+}
+
 #[cfg(test)]
 mod tests {
     use super::{AuthMethod, KeyRef};
