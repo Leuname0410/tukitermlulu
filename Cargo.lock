@@ -4943,6 +4943,7 @@ name = "tuki-adapters"
 version = "0.1.0"
 dependencies = [
  "russh",
+ "tokio",
  "tuki-application",
  "tuki-core",
 ]
