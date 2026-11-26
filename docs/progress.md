@@ -15,5 +15,7 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-05a | APPROVE | 1 | 5 (+llaves) | rama `feat/T-05a-ssh-fixtures` desde T-04. Alpine 3.22 + OpenSSH, `127.0.0.1:2222`, host key fija + `known_hosts`, `.gitattributes` LF. `ssh ... echo ok` verificado con StrictHostKeyChecking=yes |
 | T-05b | APPROVE | 1 | 3 (+24 llaves) | rama `feat/T-05b-key-fixtures` desde T-05a. 12 llaves (OpenSSH/PKCS#1/PKCS#8 RSA, ECDSA P-256, Ed25519, PPK v2/v3 Argon2id), passphrase `tuki-pass`, generadas por `gen-keys.sh` en contenedor. Añadido `Subsystem sftp` (pendiente de T-05a). ssh con 3 formatos + sftp verificados |
 
+| T-06 | APPROVE | 1 | 3 (+lock) | rama `feat/T-06-key-format-spike` desde `main` (22049eb). russh 0.65.4 carga las 13 llaves, sin plan B. Backend `ring` (aws-lc-rs exige NASM en Windows). ADR-003 propuesto |
+
 ## F1 (redactado, sin ejecutar)
 T-06 (spike formatos de llave) · T-07a (errores, Host/Port/RemotePath) · T-07b (Auth/Session/Folder) · T-08 (puertos; **bloqueado** por decisión async-trait vs `impl Future`)
