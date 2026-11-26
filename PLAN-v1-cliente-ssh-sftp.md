@@ -149,7 +149,7 @@ repo/
 |---|---|---|
 | T-09 | Adaptador `KeyLoader`: PEM y PPK, detección de formato, errores claros (passphrase incorrecta, formato no soportado) | Test por fixture; el passphrase se borra de memoria con `zeroize` |
 | T-10 | Adaptador `SecretStore` con `keyring` (Credential Manager, Secret Service, Keychain) + fake en memoria para tests | Ida y vuelta guardar/leer/borrar en los 3 SO; nada en disco en claro |
-| T-11 | `HostKeyVerifier`: TOFU + archivo known_hosts propio; bloqueo si la llave cambia | Tests: host nuevo → pregunta; mismo → ok; distinto → error |
+| T-11 | `HostKeyVerifier`: TOFU + archivo known_hosts propio; bloqueo si la llave cambia. Entradas indexadas por `[host]:puerto` | Tests: host nuevo → pregunta; mismo → ok; distinto → error; mismo host con otro puerto → host nuevo |
 | T-12 | Caso de uso `ImportKey` (copia opcional a un directorio de la app con permisos 0600 en Linux/macOS / ACL de usuario en Windows) | Test unit con mocks + integración en Linux y macOS |
 
 ### F3 — Conexión SSH y terminal (semanas 5–6)
@@ -165,8 +165,9 @@ repo/
 | ID | Ticket | Criterio clave |
 |---|---|---|
 | T-18 | `SessionRepository` en SQLite + migraciones | Tests CRUD contra SQLite en memoria |
-| T-19 | UI: árbol de sesiones con carpetas, crear/editar/duplicar/borrar, búsqueda | Tests UI; validación del formulario reutiliza las reglas del dominio |
-| T-20 | Diálogos: passphrase, aceptar huella de host, error de auth | Tests UI; nunca se prellena el passphrase |
+| T-18b | Casos de uso `CreateSession`, `UpdateSession`, `DuplicateSession`, `DeleteSession` con gestión de credenciales: cambiar host/puerto/usuario/método de auth/llave; guardar, cambiar u olvidar contraseña y passphrase de llave en `SecretStore` (opción "recordar") | Unit con mocks: editar puerto/usuario persiste; nuevo secreto reemplaza al anterior; "olvidar" lo borra; cambiar de contraseña a llave borra la contraseña guardada; duplicar **no** copia secretos; borrar sesión borra sus secretos; los cambios aplican en la próxima conexión (la sesión abierta no se altera) |
+| T-19 | UI: árbol de sesiones con carpetas, crear/editar/duplicar/borrar, búsqueda. Formulario de edición: host, puerto, usuario, método de auth, llave, contraseña/passphrase (campo vacío = no cambiar) + "recordar" + "olvidar credencial guardada" | Tests UI; validación del formulario reutiliza las reglas del dominio; nunca muestra ni prellena un secreto guardado (solo indica "guardado") |
+| T-20 | Diálogos: passphrase, aceptar huella de host, error de auth. En error de auth con secreto guardado: pedir de nuevo y ofrecer actualizar el guardado | Tests UI; nunca se prellena el passphrase; reintento con secreto nuevo + "recordar" lo actualiza vía `UpdateSession` |
 
 ### F5 — SFTP sidebar (semanas 8–10) — el diferenciador
 | ID | Ticket | Criterio clave |
