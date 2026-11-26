@@ -3,5 +3,7 @@
 pub mod auth;
 pub mod error;
 pub mod host;
+pub mod port_errors;
+pub mod ports;
 pub mod remote_path;
 pub mod session;
