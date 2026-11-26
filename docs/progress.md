@@ -1,0 +1,14 @@
+# Progreso
+
+Generador: `opencode-cli` 2.4.2 (`%APPDATA%\ai.opencode.desktop\cli\2.4.2-x64\opencode-cli.exe`).
+El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2.
+
+| ticket | estado | rondas | archivos | notas |
+|---|---|---|---|---|
+| T-01a | APPROVE | 2 | 4 (+lock) | rama `feat/T-01a-workspace-core` desde `main`. Paquetes `tuki-*` (Cargo prohíbe `core`). R1: licencia MIT→MPL-2.0 (error del ticket) |
+| T-01b | APPROVE | 1 | 4 (+lock) | rama `feat/T-01b-app-adapters` desde T-01a. MINOR: warnings `unused dependency` en crates vacíos |
+| T-01c | APPROVE | 1 | 5 (+lock) | rama `feat/T-01c-ui-scaffold` desde T-01b. React 19, Vite 8, TS 7 |
+| T-01d | APPROVE | 2 | 6 (+iconos, locks) | rama `feat/T-01d-desktop-tauri` desde T-01c. R1: identifier `.app` + iconos móviles. CLI requiere `TAURI_APP_PATH=../crates/desktop`. Ventana verificada en Windows; Linux/macOS pendientes (CI/manual). MINOR: ignorar `crates/desktop/gen/` |
+| T-02 | APPROVE | 1 | 5 (+4 manifiestos `publish`, locks) | rama `feat/T-02-justfile-gate` desde T-01d. Gate: 2 intentos (MSRV 1.85 retenía `time`/`quick-xml` vulnerables → 1.100 + `cargo update`). TS 7→5.9 por typescript-eslint. Avisos sin parche (no ignorados): `chrono`, `proc-macro-error` (unmaintained), `glib 0.18` (unsound, Linux/GTK vía Tauri) |
+| T-03 | APPROVE | 1 | 1 | rama `feat/T-03-ci` desde T-02. macOS solo en PR (matriz `fromJSON`). Pendiente humano: checks verdes en los 3 SO tras push. MINOR: push+PR duplican ejecución. 1 cuelgue de OpenCode (relanzado) |
+| T-04 | APPROVE (docs, sin generador) | — | 6 | rama `feat/T-04-docs` desde T-03. `AGENTS.md` 73 líneas, `CLAUDE.md` 59. `tickets/TEMPLATE.md`. ADR-001/002 en estado **Propuesto** (requieren tu aprobación). Pendiente: `ServerMetricsProvider` en AGENTS.md no está en el plan |
