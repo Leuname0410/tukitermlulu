@@ -17,6 +17,7 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 
 | T-06 | APPROVE | 1 | 3 (+lock) | rama `feat/T-06-key-format-spike` desde `main` (22049eb). russh 0.65.4 carga las 13 llaves, sin plan B. Backend `ring` (aws-lc-rs exige NASM en Windows). ADR-003 propuesto |
 | T-07a | APPROVE | 2 | 5 (+lock) | rama `feat/T-07a-host-value-objects` desde T-06. 23 tests. R1 BLOCKER: `join` aceptaba `""`, `.` y `\` (path traversal en Windows; error del ticket). MINOR: `Hostname` acepta `user@host`/`host:22` |
+| T-07b | APPROVE | 1 | 4 | rama `feat/T-07b-session-entities` desde T-07a. 14 tests. Passphrase no representable en el dominio. MINOR: campos `pub` en `Session`/`Folder` permiten saltar validación (revisar en T-18); validación de nombre duplicada ×3 |
 
 ## F1 (redactado, sin ejecutar)
 T-06 (spike formatos de llave) · T-07a (errores, Host/Port/RemotePath) · T-07b (Auth/Session/Folder) · T-08 (puertos; **bloqueado** por decisión async-trait vs `impl Future`)
