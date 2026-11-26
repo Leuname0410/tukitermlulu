@@ -35,9 +35,14 @@ impl RemotePath {
         RemotePath::new(before).ok()
     }
 
-    /// Añade un nombre a la ruta, rechazando separadores y `..`.
+    /// Añade un nombre a la ruta, rechazando separadores, nombres vacíos, `.` y `..`.
     pub fn join(&self, name: &str) -> Result<RemotePath, DomainError> {
-        if name.contains('/') || name == ".." {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.contains('/')
+            || name.contains('\\')
+        {
             return Err(DomainError::InvalidRemotePath);
         }
         let joined = if self.0 == "/" {
