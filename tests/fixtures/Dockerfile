@@ -8,7 +8,12 @@ RUN apk add --no-cache openssh \
     && chmod 700 /home/tuki/.ssh
 
 COPY ed25519.pub /home/tuki/.ssh/authorized_keys
-RUN chown tuki:tuki /home/tuki/.ssh/authorized_keys \
+# Solo se copian las claves públicas: las privadas nunca entran en la imagen.
+COPY keys/*.pub /tmp/tuki-pubkeys/
+RUN cat /home/tuki/.ssh/authorized_keys /tmp/tuki-pubkeys/*.pub > /home/tuki/.ssh/authorized_keys.all \
+    && mv /home/tuki/.ssh/authorized_keys.all /home/tuki/.ssh/authorized_keys \
+    && rm -rf /tmp/tuki-pubkeys \
+    && chown tuki:tuki /home/tuki/.ssh/authorized_keys \
     && chmod 600 /home/tuki/.ssh/authorized_keys
 
 COPY host/ssh_host_ed25519_key /etc/ssh/ssh_host_ed25519_key
@@ -20,6 +25,7 @@ RUN printf '%s\n' \
     'PasswordAuthentication yes' \
     'PubkeyAuthentication yes' \
     'PermitRootLogin no' \
+    'Subsystem sftp internal-sftp' \
     > /etc/ssh/sshd_config
 
 EXPOSE 22
