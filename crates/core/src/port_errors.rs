@@ -28,15 +28,68 @@ pub enum FsError {
     Operation,
 }
 
+/// Fallos al cargar una llave privada. El mensaje nunca incluye la ruta ni la passphrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum KeyError {
+    #[error("key passphrase is incorrect")]
+    WrongPassphrase,
+    #[error("key passphrase is required")]
+    PassphraseRequired,
+    #[error("unsupported private key format")]
+    UnsupportedFormat,
+    #[error("key file not found")]
+    NotFound,
+    #[error("key loading I/O failed")]
+    Io,
+}
+
+/// Fallos del almacén de secretos del sistema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SecretError {
+    #[error("secret store is unavailable on this system")]
+    Unavailable,
+    #[error("secret store I/O failed")]
+    Io,
+}
+
+/// Fallos de verificación de la llave del host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HostKeyError {
+    #[error("invalid host key fingerprint")]
+    InvalidFingerprint,
+    #[error("host key verification I/O failed")]
+    Io,
+}
+
+/// Fallos de persistencia de sesiones y carpetas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum RepositoryError {
+    #[error("session repository entry not found")]
+    NotFound,
+    #[error("session repository entry conflicts with existing data")]
+    Conflict,
+    #[error("session repository I/O failed")]
+    Io,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn should_use_fixed_messages_when_formatting_key_errors() {
-        assert_eq!(KeyError::WrongPassphrase.to_string(), "key passphrase is incorrect");
-        assert_eq!(KeyError::PassphraseRequired.to_string(), "key passphrase is required");
-        assert_eq!(KeyError::UnsupportedFormat.to_string(), "unsupported private key format");
+        assert_eq!(
+            KeyError::WrongPassphrase.to_string(),
+            "key passphrase is incorrect"
+        );
+        assert_eq!(
+            KeyError::PassphraseRequired.to_string(),
+            "key passphrase is required"
+        );
+        assert_eq!(
+            KeyError::UnsupportedFormat.to_string(),
+            "unsupported private key format"
+        );
         assert_eq!(KeyError::NotFound.to_string(), "key file not found");
         assert_eq!(KeyError::Io.to_string(), "key loading I/O failed");
     }

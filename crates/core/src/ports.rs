@@ -4,9 +4,13 @@ use std::future::Future;
 
 use zeroize::Zeroizing;
 
+use crate::auth::KeyRef;
 use crate::host::Host;
-use crate::port_errors::{FsError, TransportError};
+use crate::port_errors::{
+    FsError, HostKeyError, KeyError, RepositoryError, SecretError, TransportError,
+};
 use crate::remote_path::RemotePath;
+use crate::session::{Folder, FolderId, Session, SessionId};
 
 /// Identificador opaco de una conexión SSH.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -115,6 +119,39 @@ pub struct FileStat {
     pub is_dir: bool,
 }
 
+/// Clave de un secreto de sesión; nunca identifica una passphrase de llave (ADR-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SecretKey {
+    pub session: SessionId,
+}
+
+/// Huella de la llave del host, con formato `SHA256:<base64>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostKeyFingerprint(String);
+
+impl HostKeyFingerprint {
+    /// Crea una huella rechazando la cadena vacía.
+    pub fn new(value: &str) -> Result<Self, HostKeyError> {
+        if value.is_empty() {
+            return Err(HostKeyError::InvalidFingerprint);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    /// Devuelve la huella como cadena.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Resultado de comprobar la llave del host contra la lista de confianza.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostKeyStatus {
+    Known,
+    Unknown,
+    Changed,
+}
+
 /// Conexión SSH y canales PTY.
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait SshTransport: Send + Sync {
@@ -171,6 +208,79 @@ pub trait RemoteFileSystem: Send + Sync {
     ) -> impl Future<Output = Result<(), FsError>> + Send;
 }
 
+/// Carga de llaves privadas desde el sistema de archivos local.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait KeyLoader: Send + Sync {
+    fn load<'a>(
+        &self,
+        key: &'a KeyRef,
+        passphrase: Option<&'a SecretString>,
+    ) -> impl Future<Output = Result<PrivateKey, KeyError>> + Send;
+}
+
+/// Almacén de secretos de sesión; no expone operaciones para passphrases de llave (ADR-004).
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait SecretStore: Send + Sync {
+    fn get(
+        &self,
+        key: &SecretKey,
+    ) -> impl Future<Output = Result<Option<SecretString>, SecretError>> + Send;
+    /// Reemplaza el secreto existente.
+    fn set(
+        &self,
+        key: &SecretKey,
+        value: &SecretString,
+    ) -> impl Future<Output = Result<(), SecretError>> + Send;
+    /// Borra el secreto; no falla si ya estaba ausente.
+    fn delete(&self, key: &SecretKey) -> impl Future<Output = Result<(), SecretError>> + Send;
+}
+
+/// Verificación de la llave del host contra la lista de confianza.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait HostKeyVerifier: Send + Sync {
+    fn verify(
+        &self,
+        host: &Host,
+        fingerprint: &HostKeyFingerprint,
+    ) -> impl Future<Output = Result<HostKeyStatus, HostKeyError>> + Send;
+    /// Confía explícitamente en la huella (TOFU).
+    fn trust(
+        &self,
+        host: &Host,
+        fingerprint: &HostKeyFingerprint,
+    ) -> impl Future<Output = Result<(), HostKeyError>> + Send;
+}
+
+/// Persistencia de sesiones y carpetas del gestor.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait SessionRepository: Send + Sync {
+    fn next_session_id(&self) -> impl Future<Output = Result<SessionId, RepositoryError>> + Send;
+    fn next_folder_id(&self) -> impl Future<Output = Result<FolderId, RepositoryError>> + Send;
+    fn list_sessions(&self) -> impl Future<Output = Result<Vec<Session>, RepositoryError>> + Send;
+    fn get_session(
+        &self,
+        id: SessionId,
+    ) -> impl Future<Output = Result<Option<Session>, RepositoryError>> + Send;
+    /// Inserta o actualiza la sesión.
+    fn save_session(
+        &self,
+        session: &Session,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send;
+    fn delete_session(
+        &self,
+        id: SessionId,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send;
+    fn list_folders(&self) -> impl Future<Output = Result<Vec<Folder>, RepositoryError>> + Send;
+    fn save_folder(
+        &self,
+        folder: &Folder,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send;
+    fn delete_folder(
+        &self,
+        id: FolderId,
+    ) -> impl Future<Output = Result<(), RepositoryError>> + Send;
+}
+
 /// Parser incremental de OSC 7 que sigue el directorio de trabajo remoto.
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait CwdTracker: Send {
@@ -180,10 +290,7 @@ pub trait CwdTracker: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::KeyRef;
     use crate::host::{Hostname, Port, Username};
-    use crate::port_errors::HostKeyError;
-    use crate::session::SessionId;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
@@ -289,7 +396,10 @@ mod tests {
         mock.expect_next_session_id()
             .once()
             .returning(|| Box::pin(async { Ok(SessionId::new(42)) }));
-        assert_eq!(block_on(mock.next_session_id()).unwrap(), SessionId::new(42));
+        assert_eq!(
+            block_on(mock.next_session_id()).unwrap(),
+            SessionId::new(42)
+        );
     }
 
     #[test]
