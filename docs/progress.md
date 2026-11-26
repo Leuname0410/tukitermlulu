@@ -12,3 +12,8 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-02 | APPROVE | 1 | 5 (+4 manifiestos `publish`, locks) | rama `feat/T-02-justfile-gate` desde T-01d. Gate: 2 intentos (MSRV 1.85 retenía `time`/`quick-xml` vulnerables → 1.100 + `cargo update`). TS 7→5.9 por typescript-eslint. Avisos sin parche (no ignorados): `chrono`, `proc-macro-error` (unmaintained), `glib 0.18` (unsound, Linux/GTK vía Tauri) |
 | T-03 | APPROVE | 1 | 1 | rama `feat/T-03-ci` desde T-02. macOS solo en PR (matriz `fromJSON`). Pendiente humano: checks verdes en los 3 SO tras push. MINOR: push+PR duplican ejecución. 1 cuelgue de OpenCode (relanzado) |
 | T-04 | APPROVE (docs, sin generador) | — | 6 | rama `feat/T-04-docs` desde T-03. `AGENTS.md` 73 líneas, `CLAUDE.md` 59. `tickets/TEMPLATE.md`. ADR-001/002 en estado **Propuesto** (requieren tu aprobación). Pendiente: `ServerMetricsProvider` en AGENTS.md no está en el plan |
+| T-05a | APPROVE | 1 | 5 (+llaves) | rama `feat/T-05a-ssh-fixtures` desde T-04. Alpine 3.22 + OpenSSH, `127.0.0.1:2222`, host key fija + `known_hosts`, `.gitattributes` LF. `ssh ... echo ok` verificado con StrictHostKeyChecking=yes |
+| T-05b | APPROVE | 1 | 3 (+24 llaves) | rama `feat/T-05b-key-fixtures` desde T-05a. 12 llaves (OpenSSH/PKCS#1/PKCS#8 RSA, ECDSA P-256, Ed25519, PPK v2/v3 Argon2id), passphrase `tuki-pass`, generadas por `gen-keys.sh` en contenedor. Añadido `Subsystem sftp` (pendiente de T-05a). ssh con 3 formatos + sftp verificados |
+
+## F1 (redactado, sin ejecutar)
+T-06 (spike formatos de llave) · T-07a (errores, Host/Port/RemotePath) · T-07b (Auth/Session/Folder) · T-08 (puertos; **bloqueado** por decisión async-trait vs `impl Future`)
