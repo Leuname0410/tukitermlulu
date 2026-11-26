@@ -180,6 +180,10 @@ pub trait CwdTracker: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::KeyRef;
+    use crate::host::{Hostname, Port, Username};
+    use crate::port_errors::HostKeyError;
+    use crate::session::SessionId;
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
@@ -194,6 +198,14 @@ mod tests {
 
     fn path() -> RemotePath {
         RemotePath::new("/tmp").unwrap()
+    }
+
+    fn host() -> Host {
+        Host {
+            hostname: Hostname::new("example.com").unwrap(),
+            port: Port::default(),
+            username: Username::new("alice").unwrap(),
+        }
     }
 
     #[test]
@@ -234,5 +246,63 @@ mod tests {
         let debug = format!("{:?}", SecretString::from("topsecret"));
         assert!(!debug.contains("topsecret"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn should_mock_key_loader_when_loading_a_key() {
+        let mut mock = MockKeyLoader::new();
+        mock.expect_load()
+            .once()
+            .returning(|_, _| Box::pin(async { Ok(PrivateKey::new(vec![1, 2, 3])) }));
+        let key = KeyRef::new("~/.ssh/id_ed25519").unwrap();
+        let loaded = block_on(mock.load(&key, None)).unwrap();
+        assert_eq!(loaded.as_bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn should_mock_secret_store_when_getting_a_session_secret() {
+        let mut mock = MockSecretStore::new();
+        mock.expect_get()
+            .once()
+            .returning(|_| Box::pin(async { Ok(Some(SecretString::new("stored"))) }));
+        let key = SecretKey {
+            session: SessionId::new(7),
+        };
+        let secret = block_on(mock.get(&key)).unwrap().unwrap();
+        assert_eq!(secret.expose(), "stored");
+    }
+
+    #[test]
+    fn should_mock_host_key_verifier_when_verifying_a_fingerprint() {
+        let mut mock = MockHostKeyVerifier::new();
+        mock.expect_verify()
+            .once()
+            .returning(|_, _| Box::pin(async { Ok(HostKeyStatus::Known) }));
+        let fingerprint = HostKeyFingerprint::new("SHA256:abc").unwrap();
+        let status = block_on(mock.verify(&host(), &fingerprint)).unwrap();
+        assert_eq!(status, HostKeyStatus::Known);
+    }
+
+    #[test]
+    fn should_mock_session_repository_when_getting_the_next_session_id() {
+        let mut mock = MockSessionRepository::new();
+        mock.expect_next_session_id()
+            .once()
+            .returning(|| Box::pin(async { Ok(SessionId::new(42)) }));
+        assert_eq!(block_on(mock.next_session_id()).unwrap(), SessionId::new(42));
+    }
+
+    #[test]
+    fn should_reject_empty_fingerprint_when_creating_host_key_fingerprint() {
+        assert_eq!(
+            HostKeyFingerprint::new(""),
+            Err(HostKeyError::InvalidFingerprint)
+        );
+    }
+
+    #[test]
+    fn should_expose_fingerprint_when_creating_host_key_fingerprint() {
+        let fingerprint = HostKeyFingerprint::new("SHA256:abc").unwrap();
+        assert_eq!(fingerprint.as_str(), "SHA256:abc");
     }
 }

@@ -27,3 +27,54 @@ pub enum FsError {
     #[error("remote file system operation failed")]
     Operation,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_use_fixed_messages_when_formatting_key_errors() {
+        assert_eq!(KeyError::WrongPassphrase.to_string(), "key passphrase is incorrect");
+        assert_eq!(KeyError::PassphraseRequired.to_string(), "key passphrase is required");
+        assert_eq!(KeyError::UnsupportedFormat.to_string(), "unsupported private key format");
+        assert_eq!(KeyError::NotFound.to_string(), "key file not found");
+        assert_eq!(KeyError::Io.to_string(), "key loading I/O failed");
+    }
+
+    #[test]
+    fn should_use_fixed_messages_when_formatting_secret_errors() {
+        assert_eq!(
+            SecretError::Unavailable.to_string(),
+            "secret store is unavailable on this system"
+        );
+        assert_eq!(SecretError::Io.to_string(), "secret store I/O failed");
+    }
+
+    #[test]
+    fn should_use_fixed_messages_when_formatting_host_key_errors() {
+        assert_eq!(
+            HostKeyError::InvalidFingerprint.to_string(),
+            "invalid host key fingerprint"
+        );
+        assert_eq!(
+            HostKeyError::Io.to_string(),
+            "host key verification I/O failed"
+        );
+    }
+
+    #[test]
+    fn should_use_fixed_messages_when_formatting_repository_errors() {
+        assert_eq!(
+            RepositoryError::NotFound.to_string(),
+            "session repository entry not found"
+        );
+        assert_eq!(
+            RepositoryError::Conflict.to_string(),
+            "session repository entry conflicts with existing data"
+        );
+        assert_eq!(
+            RepositoryError::Io.to_string(),
+            "session repository I/O failed"
+        );
+    }
+}
