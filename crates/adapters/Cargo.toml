@@ -9,3 +9,6 @@ publish.workspace = true
 [dependencies]
 tuki-core = { path = "../core" }
 tuki-application = { path = "../application" }
+
+[dev-dependencies]
+russh = { version = "0.65.4", default-features = false, features = ["rsa", "ring"] }
