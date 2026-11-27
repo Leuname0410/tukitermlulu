@@ -5555,6 +5555,7 @@ dependencies = [
 name = "tuki-application"
 version = "0.1.0"
 dependencies = [
+ "mockall",
  "tuki-core",
 ]
 
