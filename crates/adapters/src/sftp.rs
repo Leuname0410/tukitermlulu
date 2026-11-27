@@ -23,6 +23,14 @@ use crate::ssh_transport::RusshTransport;
 /// Bloque fijo reutilizado para todas las transferencias (256 KiB).
 const TRANSFER_CHUNK: usize = 256 * 1024;
 
+/// Etiqueta del resultado para logs: `ok` o la variante del error.
+fn result_label<T, E: std::fmt::Debug>(result: &Result<T, E>) -> String {
+    match result {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => format!("{error:?}"),
+    }
+}
+
 /// Adaptador SFTP que reutiliza un canal por `ConnectionId`, sin nueva autenticación.
 #[derive(Clone)]
 pub struct RusshFileSystem {
@@ -70,13 +78,19 @@ impl RusshFileSystem {
     }
 
     /// Ejecuta una operación SFTP y limpia la caché si el canal se cerró.
-    async fn run<T, F, Fut>(&self, conn: ConnectionId, operation: F) -> Result<T, FsError>
+    async fn run<T, F, Fut>(
+        &self,
+        conn: ConnectionId,
+        operation: &'static str,
+        path: Option<&str>,
+        action: F,
+    ) -> Result<T, FsError>
     where
         F: FnOnce(Arc<SftpSession>) -> Fut,
         Fut: Future<Output = Result<T, SftpClientError>> + Send,
     {
         let session = self.session(conn).await?;
-        match operation(Arc::clone(&session)).await {
+        let result = match action(Arc::clone(&session)).await {
             Ok(value) => Ok(value),
             Err(error) => {
                 if channel_closed(&error) {
@@ -84,14 +98,22 @@ impl RusshFileSystem {
                 }
                 Err(map_sftp_error(error))
             }
-        }
+        };
+        tracing::debug!(
+            event = "sftp",
+            operation,
+            connection = conn.get(),
+            path = path.unwrap_or(""),
+            result = result_label(&result),
+        );
+        result
     }
 }
 
 impl RemoteFileSystem for RusshFileSystem {
     async fn list(&self, conn: ConnectionId, path: &RemotePath) -> Result<Vec<FileEntry>, FsError> {
         let entries = self
-            .run(conn, |session| async move {
+            .run(conn, "list", Some(path.as_str()), |session| async move {
                 session.read_dir(path.as_str()).await
             })
             .await?;
@@ -114,7 +136,7 @@ impl RemoteFileSystem for RusshFileSystem {
 
     async fn stat(&self, conn: ConnectionId, path: &RemotePath) -> Result<FileStat, FsError> {
         let metadata = self
-            .run(conn, |session| async move {
+            .run(conn, "stat", Some(path.as_str()), |session| async move {
                 session.metadata(path.as_str()).await
             })
             .await?;
@@ -131,7 +153,7 @@ impl RemoteFileSystem for RusshFileSystem {
         from: &RemotePath,
         to: &RemotePath,
     ) -> Result<(), FsError> {
-        self.run(conn, |session| async move {
+        self.run(conn, "rename", Some(from.as_str()), |session| async move {
             session.rename(from.as_str(), to.as_str()).await
         })
         .await
@@ -139,7 +161,7 @@ impl RemoteFileSystem for RusshFileSystem {
 
     async fn remove(&self, conn: ConnectionId, path: &RemotePath) -> Result<(), FsError> {
         let stat = self.stat(conn, path).await?;
-        self.run(conn, |session| async move {
+        self.run(conn, "remove", Some(path.as_str()), |session| async move {
             if stat.is_dir {
                 session.remove_dir(path.as_str()).await
             } else {
@@ -150,7 +172,7 @@ impl RemoteFileSystem for RusshFileSystem {
     }
 
     async fn mkdir(&self, conn: ConnectionId, path: &RemotePath) -> Result<(), FsError> {
-        self.run(conn, |session| async move {
+        self.run(conn, "mkdir", Some(path.as_str()), |session| async move {
             session.create_dir(path.as_str()).await
         })
         .await
@@ -162,7 +184,7 @@ impl RemoteFileSystem for RusshFileSystem {
             permissions: Some(mode & 0o7777),
             ..FileAttributes::default()
         };
-        self.run(conn, |session| async move {
+        self.run(conn, "chmod", Some(path.as_str()), |session| async move {
             session.set_metadata(path.as_str(), metadata).await
         })
         .await
@@ -170,10 +192,9 @@ impl RemoteFileSystem for RusshFileSystem {
 
     async fn home(&self, conn: ConnectionId) -> Result<RemotePath, FsError> {
         let home = self
-            .run(
-                conn,
-                |session| async move { session.canonicalize(".").await },
-            )
+            .run(conn, "home", None, |session| async move {
+                session.canonicalize(".").await
+            })
             .await?;
         RemotePath::new(&home).map_err(|_| FsError::Operation)
     }
@@ -229,7 +250,7 @@ impl FileTransfer for RusshFileSystem {
         }
         .await;
 
-        match result {
+        let result = match result {
             Ok(transferred) => {
                 progress.progress(transferred, Some(stat.size));
                 Ok(transferred)
@@ -238,7 +259,15 @@ impl FileTransfer for RusshFileSystem {
                 let _ = tokio::fs::remove_file(&part).await;
                 Err(error)
             }
-        }
+        };
+        tracing::info!(
+            event = "transfer",
+            connection = conn.get(),
+            direction = "download",
+            bytes = result.unwrap_or(0),
+            result = result_label(&result),
+        );
+        result
     }
 
     async fn upload(
@@ -292,20 +321,32 @@ impl FileTransfer for RusshFileSystem {
         }
         .await;
 
-        match result {
+        let result = match result {
             Ok(transferred) => {
                 progress.progress(transferred, Some(metadata.len()));
                 Ok(transferred)
             }
             Err(error) => {
+                let part_log = part.clone();
                 let _ = self
-                    .run(conn, |session| async move {
-                        session.remove_file(part.as_str()).await
-                    })
+                    .run(
+                        conn,
+                        "remove_part",
+                        Some(part_log.as_str()),
+                        |session| async move { session.remove_file(part.as_str()).await },
+                    )
                     .await;
                 Err(error)
             }
-        }
+        };
+        tracing::info!(
+            event = "transfer",
+            connection = conn.get(),
+            direction = "upload",
+            bytes = result.unwrap_or(0),
+            result = result_label(&result),
+        );
+        result
     }
 }
 

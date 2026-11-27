@@ -1,5 +1,102 @@
 //! Configuración de logs estructurados y redacción de campos sensibles.
 
+use std::fmt;
+use std::fs;
+use std::io;
+use std::path::Path;
+
+use tracing::field::{Field, Visit};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{Builder, Rotation};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::field::RecordFields;
+use tracing_subscriber::fmt::format::{FormatFields, Writer};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
+/// Nombres de campo cuyo valor nunca debe escribirse en el log.
+const SENSITIVE_FIELD_NAMES: [&str; 5] =
+    ["password", "passphrase", "secret", "private_key", "token"];
+
+fn is_sensitive(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    SENSITIVE_FIELD_NAMES
+        .iter()
+        .any(|sensitive| lowered.contains(sensitive))
+}
+
+/// Formateador que sustituye por `[REDACTED]` el valor de los campos sensibles.
+#[derive(Debug, Default)]
+pub(crate) struct RedactingFields;
+
+impl<'writer> FormatFields<'writer> for RedactingFields {
+    fn format_fields<R: RecordFields>(&self, writer: Writer<'writer>, fields: R) -> fmt::Result {
+        let mut visitor = RedactingVisitor {
+            writer,
+            first: true,
+        };
+        fields.record(&mut visitor);
+        Ok(())
+    }
+}
+
+struct RedactingVisitor<'writer> {
+    writer: Writer<'writer>,
+    first: bool,
+}
+
+impl RedactingVisitor<'_> {
+    fn write_field(&mut self, name: &str, value: &dyn fmt::Display) {
+        if !self.first {
+            let _ = write!(self.writer, " ");
+        }
+        self.first = false;
+        if is_sensitive(name) {
+            let _ = write!(self.writer, "{name}=[REDACTED]");
+        } else {
+            let _ = write!(self.writer, "{name}={value}");
+        }
+    }
+}
+
+impl Visit for RedactingVisitor<'_> {
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        self.write_field(field.name(), &format!("{value:?}"));
+    }
+
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.write_field(field.name(), &value);
+    }
+}
+
+/// Instala el subscriber global con archivo diario y devuelve su guardia.
+pub(crate) fn init(log_dir: &Path) -> Result<WorkerGuard, io::Error> {
+    fs::create_dir_all(log_dir)?;
+    let appender = Builder::new()
+        .rotation(Rotation::DAILY)
+        .filename_prefix("tukitermlulu")
+        .filename_suffix("log")
+        .max_log_files(7)
+        .build(log_dir)
+        .map_err(io::Error::other)?;
+    let (writer, guard) = tracing_appender::non_blocking(appender);
+    let filter = EnvFilter::try_from_env("TUKI_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let file_layer = tracing_subscriber::fmt::layer()
+        .fmt_fields(RedactingFields)
+        .with_ansi(false)
+        .with_writer(writer);
+    let subscriber = tracing_subscriber::registry().with(filter).with(file_layer);
+    #[cfg(debug_assertions)]
+    let subscriber = subscriber.with(
+        tracing_subscriber::fmt::layer()
+            .fmt_fields(RedactingFields)
+            .with_ansi(false)
+            .with_writer(io::stderr),
+    );
+    subscriber.try_init().map_err(io::Error::other)?;
+    Ok(guard)
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -136,17 +233,31 @@ mod tests {
         }
     }
 
+    /// Detecta el inicio de una llamada real: `info!(` y no la mención `info!` en texto.
+    fn macro_offset(line: &str) -> Option<usize> {
+        LOG_MACROS
+            .iter()
+            .filter_map(|name| {
+                let mut start = 0;
+                while let Some(position) = line[start..].find(name) {
+                    let offset = start + position;
+                    if line[offset + name.len()..].trim_start().starts_with('(') {
+                        return Some(offset);
+                    }
+                    start = offset + name.len();
+                }
+                None
+            })
+            .min()
+    }
+
     fn violations_in_file(path: &Path) -> Vec<String> {
         let content = fs::read_to_string(path).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         let mut violations = Vec::new();
         let mut index = 0;
         while index < lines.len() {
-            let Some(offset) = LOG_MACROS
-                .iter()
-                .filter_map(|name| lines[index].find(name))
-                .min()
-            else {
+            let Some(offset) = macro_offset(lines[index]) else {
                 index += 1;
                 continue;
             };
@@ -156,7 +267,11 @@ mod tests {
                 let line = lines[index];
                 call.push_str(if first { &line[offset..] } else { line });
                 call.push(' ');
-                let ends = line[offset..].contains(')');
+                let ends = if first {
+                    line[offset..].contains(')')
+                } else {
+                    line.contains(')')
+                };
                 first = false;
                 if ends || index + 1 == lines.len() {
                     break;

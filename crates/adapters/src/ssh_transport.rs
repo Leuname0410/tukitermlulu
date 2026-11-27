@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::client::{AuthResult, Config, Handle, Msg};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
@@ -19,6 +19,24 @@ use tuki_core::ports::{
 
 /// Tope de bytes retenidos por cada flujo de un `exec`; el resto se descarta.
 const EXEC_OUTPUT_LIMIT: usize = 64 * 1024;
+
+/// Etiqueta del resultado para logs: `ok` o la variante del error.
+fn result_label<T, E: std::fmt::Debug>(result: &Result<T, E>) -> String {
+    match result {
+        Ok(_) => "ok".to_owned(),
+        Err(error) => format!("{error:?}"),
+    }
+}
+
+/// Registra un fallo al abrir el PTY y devuelve el error del dominio.
+fn open_pty_failure(conn: ConnectionId) -> TransportError {
+    tracing::warn!(
+        event = "open_pty",
+        connection = conn.get(),
+        result = "OpenPty"
+    );
+    TransportError::OpenPty
+}
 
 fn append_capped(buffer: &mut Vec<u8>, data: &[u8]) {
     let available = EXEC_OUTPUT_LIMIT.saturating_sub(buffer.len());
@@ -139,35 +157,48 @@ impl Default for RusshTransport {
 
 impl SshTransport for RusshTransport {
     async fn connect(&self, host: &Host) -> Result<Connected, TransportError> {
-        let observed = Arc::new(Mutex::new(None));
-        let handler = FingerprintHandler {
-            fingerprint: Arc::clone(&observed),
-        };
-        let address = (host.hostname.as_str(), host.port.get());
-        let handle = tokio::time::timeout(
-            self.inner.connect_timeout,
-            russh::client::connect(Arc::clone(&self.inner.config), address, handler),
-        )
-        .await
-        .map_err(|_| TransportError::Connect)?
-        .map_err(|_| TransportError::Connect)?;
-        let raw = observed
-            .lock()
+        let started = Instant::now();
+        let result: Result<Connected, TransportError> = async {
+            let observed = Arc::new(Mutex::new(None));
+            let handler = FingerprintHandler {
+                fingerprint: Arc::clone(&observed),
+            };
+            let address = (host.hostname.as_str(), host.port.get());
+            let handle = tokio::time::timeout(
+                self.inner.connect_timeout,
+                russh::client::connect(Arc::clone(&self.inner.config), address, handler),
+            )
             .await
-            .take()
-            .ok_or(TransportError::Connect)?;
-        let fingerprint = HostKeyFingerprint::new(&raw).map_err(|_| TransportError::Connect)?;
-        let id = ConnectionId::new(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
-        let stored = StoredConnection {
-            handle,
-            username: host.username.as_str().to_owned(),
-        };
-        self.inner
-            .connections
-            .lock()
-            .await
-            .insert(id, Arc::new(Mutex::new(stored)));
-        Ok(Connected { id, fingerprint })
+            .map_err(|_| TransportError::Connect)?
+            .map_err(|_| TransportError::Connect)?;
+            let raw = observed
+                .lock()
+                .await
+                .take()
+                .ok_or(TransportError::Connect)?;
+            let fingerprint = HostKeyFingerprint::new(&raw).map_err(|_| TransportError::Connect)?;
+            let id = ConnectionId::new(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
+            let stored = StoredConnection {
+                handle,
+                username: host.username.as_str().to_owned(),
+            };
+            self.inner
+                .connections
+                .lock()
+                .await
+                .insert(id, Arc::new(Mutex::new(stored)));
+            Ok(Connected { id, fingerprint })
+        }
+        .await;
+        tracing::info!(
+            event = "connect",
+            host = host.hostname.as_str(),
+            port = host.port.get(),
+            user = host.username.as_str(),
+            duration_ms = started.elapsed().as_millis() as u64,
+            result = result_label(&result),
+        );
+        result
     }
 
     async fn authenticate(
@@ -181,6 +212,10 @@ impl SshTransport for RusshTransport {
         };
         let mut stored = connection.lock().await;
         let username = stored.username.clone();
+        let method = match &credential {
+            Credential::Password(_) => "password",
+            Credential::PublicKey(_) => "key",
+        };
         let result = match credential {
             Credential::Password(password) => {
                 stored
@@ -203,11 +238,17 @@ impl SshTransport for RusshTransport {
                     .await
             }
         };
-        match result {
+        let outcome = match result {
             Ok(AuthResult::Success) => Ok(()),
             Ok(AuthResult::Failure { .. }) => Err(TransportError::AuthenticationRejected),
             Err(error) => Err(map_auth_error(error)),
-        }
+        };
+        tracing::info!(
+            event = "authenticate",
+            method,
+            result = result_label(&outcome),
+        );
+        outcome
     }
 
     async fn open_pty(
@@ -226,7 +267,7 @@ impl SshTransport for RusshTransport {
                 .handle
                 .channel_open_session()
                 .await
-                .map_err(|_| TransportError::OpenPty)?
+                .map_err(|_| open_pty_failure(conn))?
         };
         channel
             .request_pty(
@@ -239,11 +280,11 @@ impl SshTransport for RusshTransport {
                 &[],
             )
             .await
-            .map_err(|_| TransportError::OpenPty)?;
+            .map_err(|_| open_pty_failure(conn))?;
         channel
             .request_shell(false)
             .await
-            .map_err(|_| TransportError::OpenPty)?;
+            .map_err(|_| open_pty_failure(conn))?;
 
         let (mut reader, writer) = channel.split();
         let channel_id = ChannelId::new(self.inner.next_channel_id.fetch_add(1, Ordering::Relaxed));
@@ -254,6 +295,12 @@ impl SshTransport for RusshTransport {
                 connection: conn,
                 writer: Arc::new(writer),
             },
+        );
+        tracing::info!(
+            event = "open_pty",
+            connection = conn.get(),
+            channel = channel_id.get(),
+            result = "ok"
         );
 
         let mut sink = sink;
@@ -372,9 +419,14 @@ impl SshTransport for RusshTransport {
     async fn close(&self, conn: ConnectionId) -> Result<(), TransportError> {
         let connection = {
             let mut connections = self.inner.connections.lock().await;
-            connections
-                .remove(&conn)
-                .ok_or(TransportError::NotConnected)?
+            connections.remove(&conn).ok_or_else(|| {
+                tracing::warn!(
+                    event = "close",
+                    connection = conn.get(),
+                    result = "NotConnected"
+                );
+                TransportError::NotConnected
+            })?
         };
         let writers = {
             let mut channels = self.inner.channels.lock().await;
@@ -395,11 +447,16 @@ impl SshTransport for RusshTransport {
             let _ = writer.close().await;
         }
         let stored = connection.lock().await;
-        stored
+        let result = stored
             .handle
             .disconnect(Disconnect::ByApplication, "", "")
-            .await
-            .map_err(|_| TransportError::Close)
+            .await;
+        tracing::info!(
+            event = "close",
+            connection = conn.get(),
+            result = result_label(&result),
+        );
+        result.map_err(|_| TransportError::Close)
     }
 }
 

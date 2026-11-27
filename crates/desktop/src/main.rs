@@ -30,6 +30,15 @@ use crate::transfers::{
 fn main() {
     if let Err(error) = tauri::Builder::default()
         .setup(|app| {
+            match app.path().app_log_dir() {
+                Ok(log_dir) => match logging::init(&log_dir) {
+                    Ok(guard) => {
+                        app.manage(guard);
+                    }
+                    Err(error) => eprintln!("warning: file logging disabled: {error}"),
+                },
+                Err(error) => eprintln!("warning: log directory unavailable: {error}"),
+            }
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let known_hosts_path = data_dir.join("known_hosts");
