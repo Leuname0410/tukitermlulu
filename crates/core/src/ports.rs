@@ -297,6 +297,7 @@ pub trait CwdTracker: Send {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::DomainError;
     use crate::host::{Hostname, Port, Username};
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
@@ -329,6 +330,124 @@ mod tests {
             .once()
             .returning(|_| Box::pin(async { Ok(()) }));
         assert!(block_on(mock.close(ConnectionId::new(1))).is_ok());
+    }
+
+    #[test]
+    fn should_expose_fingerprint_before_authentication_when_connecting_a_host() {
+        let mut mock = MockSshTransport::new();
+        mock.expect_connect().once().returning(|_| {
+            Box::pin(async {
+                Ok(Connected {
+                    id: ConnectionId::new(1),
+                    fingerprint: HostKeyFingerprint::new("SHA256:abc").unwrap(),
+                })
+            })
+        });
+        let connected = block_on(mock.connect(&host())).unwrap();
+        assert_eq!(connected.id, ConnectionId::new(1));
+        assert_eq!(connected.fingerprint.as_str(), "SHA256:abc");
+    }
+
+    #[test]
+    fn should_report_rejected_credentials_when_authenticating_a_connection() {
+        let mut mock = MockSshTransport::new();
+        mock.expect_authenticate().once().returning(|_, _| {
+            Box::pin(async { Err(TransportError::AuthenticationRejected) })
+        });
+        let result = block_on(mock.authenticate(
+            ConnectionId::new(1),
+            Credential::Password(SecretString::new("pw")),
+        ));
+        assert!(matches!(result, Err(TransportError::AuthenticationRejected)));
+    }
+
+    #[test]
+    fn should_receive_pty_data_when_mock_invokes_the_sink() {
+        let mut sink = MockPtySink::new();
+        sink.expect_data()
+            .once()
+            .withf(|bytes| *bytes == b"ok");
+        let mut mock = MockSshTransport::new();
+        mock.expect_open_pty().once().returning(|_, _, mut sink| {
+            sink.data(b"ok");
+            Box::pin(async { Ok(ChannelId::new(2)) })
+        });
+        let channel = block_on(mock.open_pty(
+            ConnectionId::new(1),
+            PtySize {
+                rows: 24,
+                cols: 80,
+            },
+            Box::new(sink),
+        ))
+        .unwrap();
+        assert_eq!(channel, ChannelId::new(2));
+    }
+
+    #[test]
+    fn should_receive_closed_status_when_mock_invokes_the_sink() {
+        let mut sink = MockPtySink::new();
+        sink.expect_closed()
+            .once()
+            .withf(|status| *status == Some(0));
+        let mut mock = MockSshTransport::new();
+        mock.expect_open_pty().once().returning(|_, _, mut sink| {
+            sink.closed(Some(0));
+            Box::pin(async { Ok(ChannelId::new(3)) })
+        });
+        assert!(block_on(mock.open_pty(
+            ConnectionId::new(1),
+            PtySize {
+                rows: 24,
+                cols: 80,
+            },
+            Box::new(sink),
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn should_mock_ssh_transport_when_writing_pty_input() {
+        let mut mock = MockSshTransport::new();
+        mock.expect_write().once().returning(|channel, bytes| {
+            assert_eq!(*channel, ChannelId::new(4));
+            assert_eq!(bytes, b"ls\n");
+            Box::pin(async { Ok(()) })
+        });
+        assert!(block_on(mock.write(ChannelId::new(4), b"ls\n")).is_ok());
+    }
+
+    #[test]
+    fn should_report_unknown_connection_when_resizing_a_pty() {
+        let mut mock = MockSshTransport::new();
+        mock.expect_resize()
+            .once()
+            .returning(|_, _| Box::pin(async { Err(TransportError::NotConnected) }));
+        let result = block_on(mock.resize(
+            ChannelId::new(5),
+            PtySize {
+                rows: 24,
+                cols: 80,
+            },
+        ));
+        assert!(matches!(result, Err(TransportError::NotConnected)));
+    }
+
+    #[test]
+    fn should_reject_zero_dimensions_when_creating_pty_size() {
+        assert_eq!(PtySize::new(0, 80), Err(DomainError::InvalidPtySize));
+        assert_eq!(PtySize::new(24, 0), Err(DomainError::InvalidPtySize));
+    }
+
+    #[test]
+    fn should_accept_positive_dimensions_when_creating_pty_size() {
+        assert_eq!(
+            PtySize::new(24, 80),
+            Ok(PtySize {
+                rows: 24,
+                cols: 80
+            })
+        );
     }
 
     #[test]

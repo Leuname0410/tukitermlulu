@@ -48,6 +48,10 @@ mod tests {
                 DomainError::FolderCycle,
                 "a folder cannot be its own parent",
             ),
+            (
+                DomainError::InvalidPtySize,
+                "PTY size dimensions must be greater than zero",
+            ),
         ];
 
         for (error, message) in cases {

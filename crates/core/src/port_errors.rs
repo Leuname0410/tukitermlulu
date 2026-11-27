@@ -77,6 +77,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn should_use_fixed_messages_when_formatting_transport_errors() {
+        assert_eq!(TransportError::Connect.to_string(), "SSH connection failed");
+        assert_eq!(
+            TransportError::Authentication.to_string(),
+            "SSH authentication failed"
+        );
+        assert_eq!(
+            TransportError::AuthenticationRejected.to_string(),
+            "SSH credentials were rejected"
+        );
+        assert_eq!(
+            TransportError::NotConnected.to_string(),
+            "SSH connection is closed or unknown"
+        );
+        assert_eq!(
+            TransportError::OpenPty.to_string(),
+            "failed to open a PTY channel"
+        );
+        assert_eq!(TransportError::Resize.to_string(), "PTY resize failed");
+        assert_eq!(
+            TransportError::Close.to_string(),
+            "failed to close the SSH connection"
+        );
+        assert_eq!(TransportError::Io.to_string(), "SSH transport I/O failed");
+    }
+
+    #[test]
     fn should_use_fixed_messages_when_formatting_key_errors() {
         assert_eq!(
             KeyError::WrongPassphrase.to_string(),
