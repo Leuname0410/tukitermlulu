@@ -9,6 +9,7 @@ import { useFileDrop } from "./useFileDrop";
 export interface SftpSidebarProps {
   connectionId: number;
   path?: string;
+  followPath?: string;
   onPathChange?(path: string): void;
 }
 
@@ -34,6 +35,7 @@ function errorText(cause: unknown): string {
 export function SftpSidebar({
   connectionId,
   path,
+  followPath,
   onPathChange,
 }: SftpSidebarProps): JSX.Element {
   const [currentPath, setCurrentPath] = useState(path ?? "");
@@ -42,11 +44,14 @@ export function SftpSidebar({
   const [sort, setSort] = useState<SortState>({ key: "name", ascending: true });
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [followTerminal, setFollowTerminal] = useState(true);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [transfers, setTransfers] = useState<readonly TransferDto[]>([]);
   const requestRef = useRef(0);
   const pathChangeRef = useRef(onPathChange);
   const sidebarRef = useRef<HTMLElement>(null);
+  const currentPathRef = useRef("");
+  const lastFollowRef = useRef(followPath);
 
   useEffect(() => {
     pathChangeRef.current = onPathChange;
@@ -60,6 +65,7 @@ export function SftpSidebar({
           return;
         }
         setEntries(listed);
+        currentPathRef.current = target;
         setCurrentPath(target);
         setRouteInput(target);
         pathChangeRef.current?.(target);
@@ -124,10 +130,11 @@ export function SftpSidebar({
       setBusy(true);
       setError(null);
       try {
-        const target = path ?? (await sftpHome(connectionId));
+        const target = path ?? lastFollowRef.current ?? (await sftpHome(connectionId));
         if (token !== requestRef.current) {
           return;
         }
+        currentPathRef.current = target;
         setCurrentPath(target);
         setRouteInput(target);
         await list(target, token);
@@ -142,6 +149,17 @@ export function SftpSidebar({
       requestRef.current += 1;
     };
   }, [connectionId, path, list]);
+
+  useEffect(() => {
+    if (followPath === undefined) {
+      return;
+    }
+    const isNew = followPath !== lastFollowRef.current;
+    lastFollowRef.current = followPath;
+    if (isNew && followTerminal && followPath !== currentPathRef.current) {
+      navigate(followPath);
+    }
+  }, [followPath, followTerminal, navigate]);
 
   function toggleSort(key: SortKey): void {
     setSort((previous) =>
@@ -206,6 +224,21 @@ export function SftpSidebar({
           ↻
         </button>
       </div>
+      <label>
+        <input
+          type="checkbox"
+          checked={followTerminal}
+          onChange={(event) => {
+            const checked = event.target.checked;
+            setFollowTerminal(checked);
+            const latest = lastFollowRef.current;
+            if (checked && latest !== undefined && latest !== currentPathRef.current) {
+              navigate(latest);
+            }
+          }}
+        />
+        Seguir terminal
+      </label>
       {error !== null && <p role="alert">{error}</p>}
       <table role="grid" aria-label="Entradas remotas">
         <thead>

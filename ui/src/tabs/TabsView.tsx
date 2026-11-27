@@ -86,7 +86,9 @@ export function TabsView({
             {tab.status.kind === "connected" && controller ? (
               <SplitPane
                 sessionId={tab.target.sessionId}
-                left={<SftpSidebar connectionId={tab.status.connectionId} />}
+                left={
+                  <SftpSidebar connectionId={tab.status.connectionId} followPath={tab.cwd} />
+                }
                 right={
                   <section aria-label="Terminal">
                     <TerminalView channelId={tab.status.channelId} source={controller} />

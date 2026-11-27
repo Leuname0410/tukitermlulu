@@ -35,6 +35,31 @@ impl RemotePath {
         RemotePath::new(before).ok()
     }
 
+    /// Normaliza una ruta reportada por la terminal a la forma que entiende SFTP en OpenSSH.
+    ///
+    /// PowerShell y cmd.exe reportan `C:\a\b`, `/c:/a` o `C:`, que se convierten en
+    /// `/C:/a/b`, `/C:/a` y `/C:/`. Las rutas POSIX se dejan intactas y no se resuelven `..`.
+    pub fn from_terminal(raw: &str) -> Result<Self, DomainError> {
+        let bytes = raw.as_bytes();
+        let drive = match (bytes.first(), bytes.get(1), bytes.get(2)) {
+            (Some(letter), Some(b':'), _) if letter.is_ascii_alphabetic() => Some((*letter, 2)),
+            (Some(b'/'), Some(letter), Some(b':')) if letter.is_ascii_alphabetic() => {
+                Some((*letter, 3))
+            }
+            _ => None,
+        };
+        let Some((letter, tail_at)) = drive else {
+            return Self::new(raw);
+        };
+        let letter = letter.to_ascii_uppercase() as char;
+        let tail = raw
+            .get(tail_at..)
+            .unwrap_or("")
+            .trim_start_matches(['/', '\\'])
+            .replace('\\', "/");
+        Self::new(&format!("/{letter}:/{tail}"))
+    }
+
     /// Añade un nombre a la ruta, rechazando separadores, nombres vacíos, `.` y `..`.
     pub fn join(&self, name: &str) -> Result<RemotePath, DomainError> {
         if name.is_empty()

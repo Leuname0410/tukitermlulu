@@ -131,7 +131,7 @@ fn decode_path(payload: &[u8]) -> Option<RemotePath> {
         }
     }
     let text = std::str::from_utf8(&decoded).ok()?;
-    RemotePath::new(text).ok()
+    RemotePath::from_terminal(text).ok()
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
