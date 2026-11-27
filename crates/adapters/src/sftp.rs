@@ -8,7 +8,7 @@ use std::sync::Arc;
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpClientError;
 use russh_sftp::client::fs::File;
-use russh_sftp::protocol::StatusCode;
+use russh_sftp::protocol::{OpenFlags, StatusCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tuki_core::port_errors::{FsError, TransferError};
@@ -178,9 +178,19 @@ impl FileTransfer for RusshFileSystem {
             .open(remote.as_str())
             .await
             .map_err(map_transfer_error)?;
-        let mut target = tokio::fs::File::create(&part)
+        // Creación exclusiva: un `.part` ajeno se respeta y no entra en la limpieza.
+        let mut target = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&part)
             .await
-            .map_err(|_| TransferError::LocalIo)?;
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    TransferError::AlreadyExists
+                } else {
+                    TransferError::LocalIo
+                }
+            })?;
 
         let result: Result<u64, TransferError> = async {
             let transferred =
@@ -228,11 +238,20 @@ impl FileTransfer for RusshFileSystem {
         }
         let part = remote_part(remote)?;
         let session = self.session(conn).await.map_err(map_fs_error)?;
+        // Un `.part` ajeno se reporta sin borrarlo: la limpieza solo cubre el creado aquí.
+        match self.stat(conn, &part).await {
+            Ok(_) => return Err(TransferError::AlreadyExists),
+            Err(FsError::NotFound) => {}
+            Err(error) => return Err(map_fs_error(error)),
+        }
         let mut source = tokio::fs::File::open(local)
             .await
             .map_err(|_| TransferError::LocalIo)?;
         let mut target = session
-            .create(part.as_str())
+            .open_with_flags(
+                part.as_str(),
+                OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+            )
             .await
             .map_err(map_transfer_error)?;
 
