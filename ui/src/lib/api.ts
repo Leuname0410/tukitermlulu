@@ -85,8 +85,9 @@ function parseExitStatus(value: unknown): number | null {
   return readNumber(status, "exit_status");
 }
 
-/** Conecta y entrega la salida del PTY directamente a los handlers, sin estado de React. */
+/** Conecta una pestaña y entrega la salida del PTY a los handlers, sin estado de React. */
 export async function connect(
+  tabId: number,
   args: ConnectArgs,
   handlers: TerminalHandlers,
 ): Promise<ConnectResponse> {
@@ -103,7 +104,7 @@ export async function connect(
     handlers.onClosed(parseExitStatus(message));
   };
 
-  const response = await invoke<unknown>("connect", { args, onOutput, onClosed });
+  const response = await invoke<unknown>("connect", { tabId, args, onOutput, onClosed });
   return parseConnectResponse(response);
 }
 
@@ -122,6 +123,11 @@ export async function terminalResize(channelId: number, rows: number, cols: numb
 /** Cierra una conexión y sus PTY asociados. */
 export async function disconnect(connectionId: number): Promise<void> {
   await invoke("disconnect", { connectionId });
+}
+
+/** Olvida los secretos retenidos por el backend para la pestaña. */
+export async function closeTab(tabId: number): Promise<void> {
+  await invoke("close_tab", { tabId });
 }
 
 /** Estrecha un error IPC; Option::None se serializa como fingerprint: null. */
