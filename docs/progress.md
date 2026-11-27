@@ -38,6 +38,16 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-17b | APPROVE | 1 | 5 | rama `feat/T-17b-tab-controller` desde T-17a. Reducer + `TabController` con buffer de 1 MiB previo al `attach`. Diff 523 líneas (272 tests) |
 | T-17c | APPROVE | 2 | 6 (+4 del fix) | rama `feat/T-17c-tabs-ui` desde T-17b. R1 MAJOR: el PTY nunca recibía el tamaño real tras el fit inicial (raíz en `useTerminal.ts`, T-16). Prompts inline provisionales hasta T-20. MINOR: al terminar la sesión se desmonta la terminal y se pierde la salida |
 
+| T-18 | APPROVE | 1 | 3 (+lock) | rama `feat/T-18-sqlite-repository` desde T-17c. `rusqlite` 0.43 `bundled` (0.35 con CVE), migraciones con `PRAGMA user_version`. MINOR: ciclo A→B→A entre carpetas no se impide |
+| T-18b | APPROVE | 1 | 4 | rama `feat/T-18b-session-use-cases` desde T-18. Create/Update/Duplicate/Delete; `DuplicateSession` sin acceso a `SecretStore` |
+| T-18c | APPROVE | 1 | 6 | rama `feat/T-18c-session-commands` desde T-18b. `sessions.db` en `app_data_dir`; `connect` por `sessionId`. MINOR: `create` valida e incrementa id dos veces; `list` lee el keyring por sesión |
+| T-19 | APPROVE | 1 | 5 | rama `feat/T-19-session-tree` desde T-18c. `SessionTree.tsx` → `SessionTreeView.tsx` (colisión de mayúsculas en Windows). MINOR: carpetas en ciclo no se muestran |
+| T-20 | APPROVE | 1 | 7 | rama `feat/T-20-dialogs` desde T-19. Autorizado tocar `App.tsx`/`TabsView.tsx` para el callback de actualizar contraseña. MINOR: la contraseña nueva espera en un `Map` de `App` hasta confirmar la conexión |
+
+## F4: cerrada (2026-11-26)
+T-18 → T-18b → T-18c → T-19 → T-20. `feat/T-20-dialogs` contiene F0–F4.
+Pendiente humano: `just dev`: crear/editar/duplicar/borrar sesiones; conectar desde el árbol con "recordar"; pegar passphrase con Ctrl/Cmd+V y menú contextual; contraseña errónea guardada → diálogo con "Recordar" la actualiza.
+
 ## F3: cerrada (2026-11-26)
 T-13a → T-13b → T-13c → T-14 → T-15a → T-15b → T-16 → T-17a → T-17b → T-17c. `feat/T-17c-tabs-ui` contiene F0–F3.
 Pendiente humano: prueba manual con `just dev` contra `127.0.0.1:2222` (contraseña y llave con passphrase; vim, htop, pegar en `sudo`; `exit` + Reconectar sin pedir passphrase; cerrar y reabrir la pide).
