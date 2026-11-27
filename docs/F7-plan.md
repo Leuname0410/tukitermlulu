@@ -28,3 +28,9 @@ Orden: primero lo que no depende de decisiones externas.
 - **D4 (T-32):** Los runners de CI son ruidosos.
   - Propuesta: la línea base se fija con la mediana de 5 ejecuciones y se guarda en `docs/kpi-baseline.json` (la actualizo con un ticket cuando cambie a propósito). La regla del 20 % se aplica sobre la mediana de 5 repeticiones.
   - El job de benchmarks y el de cobertura corren solo en PR a `main` y en tags, no en cada push.
+
+## Decisiones tomadas (2026-11-27)
+- **D1:** sin Apple Developer. `.dmg` sin firmar + instrucciones de Gatekeeper en el README. T-33b se integra en T-33c.
+- **D2:** Windows sin firma en v1. El README explica el aviso de SmartScreen.
+- **D3:** e2e en Windows contra el OpenSSH Server del propio runner.
+- **D4:** mediana de 5 ejecuciones y umbral del 20 % respecto a `docs/kpi-baseline.json`. Solo en PR a `main` y en tags.
