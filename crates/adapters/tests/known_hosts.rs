@@ -139,7 +139,7 @@ async fn should_ignore_comments_and_malformed_lines_when_verifying() {
     let dir = tempdir().expect("directorio temporal");
     let path = dir.path().join("known_hosts");
     let content = "# comentario\n\nnot-an-entry\n[bad]:not-a-port SHA256:x\n[example.com]:22\n\
-                   [example.com]:2222 SHA256:for-other-port\n[other]:22 SHA256:for-other-host\n\
+                   [example.com]:2222 SHA256:forotherport\n[other]:22 SHA256:forotherhost\n\
                    [example.com]:22 SHA256:good\n";
     tokio::fs::write(&path, content)
         .await
@@ -155,16 +155,11 @@ async fn should_ignore_comments_and_malformed_lines_when_verifying() {
         HostKeyStatus::Changed
     );
     assert_eq!(
-        status(
-            &verifier,
-            &host("example.com", 2200),
-            "SHA256:for-other-port"
-        )
-        .await,
+        status(&verifier, &host("example.com", 2200), "SHA256:forotherport").await,
         HostKeyStatus::Unknown
     );
     assert_eq!(
-        status(&verifier, &host("other", 22), "SHA256:for-other-host").await,
+        status(&verifier, &host("other", 22), "SHA256:forotherhost").await,
         HostKeyStatus::Known
     );
 }
@@ -182,6 +177,44 @@ async fn should_reject_fingerprint_without_prefix_when_verifying_or_trusting() {
     );
     assert_eq!(
         verifier.trust(&host, &fingerprint("deadbeef")).await,
+        Err(HostKeyError::InvalidFingerprint)
+    );
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn should_reject_fingerprint_with_line_break_when_verifying_or_trusting() {
+    let dir = tempdir().expect("directorio temporal");
+    let path = dir.path().join("known_hosts");
+    let verifier = FileHostKeyVerifier::new(&path);
+    let host = host("example.com", 22);
+    let injected = fingerprint("SHA256:abc\n[otro]:22 SHA256:def");
+
+    assert_eq!(
+        verifier.verify(&host, &injected).await,
+        Err(HostKeyError::InvalidFingerprint)
+    );
+    assert_eq!(
+        verifier.trust(&host, &injected).await,
+        Err(HostKeyError::InvalidFingerprint)
+    );
+    assert!(!path.exists());
+}
+
+#[tokio::test]
+async fn should_reject_fingerprint_with_space_when_verifying_or_trusting() {
+    let dir = tempdir().expect("directorio temporal");
+    let path = dir.path().join("known_hosts");
+    let verifier = FileHostKeyVerifier::new(&path);
+    let host = host("example.com", 22);
+    let injected = fingerprint("SHA256:abc [otro]:22 SHA256:def");
+
+    assert_eq!(
+        verifier.verify(&host, &injected).await,
+        Err(HostKeyError::InvalidFingerprint)
+    );
+    assert_eq!(
+        verifier.trust(&host, &injected).await,
         Err(HostKeyError::InvalidFingerprint)
     );
     assert!(!path.exists());
