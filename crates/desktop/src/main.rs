@@ -5,6 +5,7 @@ mod terminal;
 mod transfers;
 
 use std::fs;
+use std::sync::Arc;
 
 use tauri::Manager;
 use tuki_adapters::session_repository::SqliteSessionRepository;
@@ -15,6 +16,10 @@ use crate::sessions::{
     save_folder, update_session,
 };
 use crate::terminal::{AppState, close_tab, connect, disconnect, terminal_resize, terminal_write};
+use crate::transfers::{
+    cancel_transfer, clear_transfers, enqueue_download, enqueue_upload, list_transfers,
+    transfer_worker,
+};
 
 fn main() {
     if let Err(error) = tauri::Builder::default()
@@ -23,10 +28,16 @@ fn main() {
             fs::create_dir_all(&data_dir)?;
             let known_hosts_path = data_dir.join("known_hosts");
             let repository = SqliteSessionRepository::open(&data_dir.join("sessions.db"))?;
-            app.manage(AppState::new(
-                RusshTransport::new(),
-                known_hosts_path,
-                repository,
+            let state = AppState::new(RusshTransport::new(), known_hosts_path, repository);
+            let transfers = Arc::clone(&state.transfers);
+            let notify = Arc::clone(&state.notify);
+            let fs = state.fs.clone();
+            app.manage(state);
+            tauri::async_runtime::spawn(transfer_worker(
+                transfers,
+                notify,
+                fs,
+                Arc::new(app.handle().clone()),
             ));
             Ok(())
         })
@@ -43,7 +54,12 @@ fn main() {
             delete_session,
             list_folders,
             save_folder,
-            delete_folder
+            delete_folder,
+            enqueue_download,
+            enqueue_upload,
+            cancel_transfer,
+            clear_transfers,
+            list_transfers
         ])
         .run(tauri::generate_context!())
     {

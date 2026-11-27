@@ -2,20 +2,25 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 use tauri::State;
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
+use tokio::sync::Notify;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::known_hosts::FileHostKeyVerifier;
 use tuki_adapters::secret_store::KeyringSecretStore;
 use tuki_adapters::session_repository::SqliteSessionRepository;
+use tuki_adapters::sftp::RusshFileSystem;
 use tuki_adapters::ssh_transport::RusshTransport;
 use tuki_application::connect_session::{
     ConnectError, ConnectOutcome, ConnectRequest, ConnectSession,
 };
 use tuki_application::connect_tab::{ConnectTab, TabId, TabPassphrases};
 use tuki_application::session_errors::SessionError;
+use tuki_application::transfer_queue::TransferQueue;
 use tuki_core::auth::{AuthMethod, KeyRef};
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::{KeyError, RepositoryError, TransportError};
@@ -26,12 +31,17 @@ use tuki_core::ports::{
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
+use crate::transfers::emit_transfers;
+
 /// Estado compartido por los comandos: transporte, known_hosts, passphrases y repositorio.
 pub struct AppState {
     transport: RusshTransport,
     known_hosts_path: PathBuf,
     passphrases: TabPassphrases,
     pub(crate) repository: SqliteSessionRepository,
+    pub(crate) fs: RusshFileSystem,
+    pub(crate) transfers: Arc<Mutex<TransferQueue>>,
+    pub(crate) notify: Arc<Notify>,
 }
 
 impl AppState {
@@ -42,10 +52,13 @@ impl AppState {
         repository: SqliteSessionRepository,
     ) -> Self {
         Self {
+            fs: RusshFileSystem::new(transport.clone()),
             transport,
             known_hosts_path,
             passphrases: TabPassphrases::new(),
             repository,
+            transfers: Arc::new(Mutex::new(TransferQueue::default())),
+            notify: Arc::new(Notify::new()),
         }
     }
 }
@@ -159,7 +172,7 @@ impl From<ConnectOutcome> for ConnectResponse {
 
 impl CommandError {
     /// Construye un error con el mensaje accionable del dominio.
-    fn new(kind: &'static str, message: impl fmt::Display) -> Self {
+    pub(crate) fn new(kind: &'static str, message: impl fmt::Display) -> Self {
         Self {
             kind,
             message: message.to_string(),
@@ -173,11 +186,11 @@ impl CommandError {
         self.kind
     }
 
-    fn invalid_input(error: impl fmt::Display) -> Self {
+    pub(crate) fn invalid_input(error: impl fmt::Display) -> Self {
         Self::new("invalid_input", error)
     }
 
-    fn not_found(error: impl fmt::Display) -> Self {
+    pub(crate) fn not_found(error: impl fmt::Display) -> Self {
         Self::new("not_found", error)
     }
 
@@ -382,12 +395,21 @@ pub async fn terminal_resize(
         .map_err(CommandError::from_transport)
 }
 
-/// Cierra una conexión y sus PTY asociados.
+/// Cierra una conexión, sus PTY asociados y cancela sus transferencias.
 #[tauri::command]
 pub async fn disconnect(
     state: State<'_, AppState>,
+    app: AppHandle,
     connection_id: u64,
 ) -> Result<(), CommandError> {
+    {
+        let mut transfers = state
+            .transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        transfers.cancel_connection(ConnectionId::new(connection_id));
+        emit_transfers(&app, &transfers);
+    }
     state
         .transport
         .close(ConnectionId::new(connection_id))

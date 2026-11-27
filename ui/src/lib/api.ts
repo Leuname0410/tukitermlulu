@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export type AuthArgs =
   | { kind: "password"; remember: boolean }
@@ -68,6 +69,27 @@ export interface CommandError {
   kind: string;
   message: string;
   fingerprint?: string;
+}
+
+export type TransferDirection = "download" | "upload";
+
+export type TransferState =
+  | "queued"
+  | "running"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+export interface TransferDto {
+  id: number;
+  connectionId: number;
+  direction: TransferDirection;
+  remote: string;
+  local: string;
+  state: TransferState;
+  transferred: number;
+  total: number | null;
+  error: string | null;
 }
 
 export interface TerminalHandlers {
@@ -201,6 +223,56 @@ function parseExitStatus(value: unknown): number | null {
   return readNumber(status, "exit_status");
 }
 
+function readNullableNumber(value: unknown, field: string): number | null {
+  if (value === null) {
+    return null;
+  }
+  return readNumber(value, field);
+}
+
+function readNullableString(value: unknown, field: string): string | null {
+  if (value === null) {
+    return null;
+  }
+  return readString(value, field);
+}
+
+function parseTransfer(value: unknown): TransferDto {
+  const job = asRecord(value);
+  const direction = job.direction;
+  if (direction !== "download" && direction !== "upload") {
+    throw new Error("El backend devolvió una dirección de transferencia inválida");
+  }
+  const state = job.state;
+  if (
+    state !== "queued" &&
+    state !== "running" &&
+    state !== "done" &&
+    state !== "failed" &&
+    state !== "cancelled"
+  ) {
+    throw new Error("El backend devolvió un estado de transferencia inválido");
+  }
+  return {
+    id: readNumber(job.id, "id"),
+    connectionId: readNumber(job.connectionId, "connectionId"),
+    direction,
+    remote: readString(job.remote, "remote"),
+    local: readString(job.local, "local"),
+    state,
+    transferred: readNumber(job.transferred, "transferred"),
+    total: readNullableNumber(job.total, "total"),
+    error: readNullableString(job.error, "error"),
+  };
+}
+
+function parseTransferList(value: unknown): TransferDto[] {
+  if (!Array.isArray(value)) {
+    throw new Error("El backend devolvió una lista de transferencias inválida");
+  }
+  return value.map(parseTransfer);
+}
+
 /** Conecta una pestaña y entrega la salida del PTY a los handlers, sin estado de React. */
 export async function connect(
   tabId: number,
@@ -296,6 +368,59 @@ export async function saveFolder(folder: FolderInput): Promise<FolderDto> {
 /** Borra una carpeta y aplica las reglas del repositorio a sus descendientes. */
 export async function deleteFolder(id: number): Promise<void> {
   await invoke("delete_folder", { id });
+}
+
+/** Encola una descarga en un directorio local existente. */
+export async function enqueueDownload(
+  connectionId: number,
+  remote: string,
+  localDir: string,
+): Promise<number> {
+  return readNumber(
+    await invoke<unknown>("enqueue_download", { connectionId, remote, localDir }),
+    "id",
+  );
+}
+
+/** Encola una subida de un archivo local al directorio remoto indicado. */
+export async function enqueueUpload(
+  connectionId: number,
+  localPath: string,
+  remoteDir: string,
+): Promise<number> {
+  return readNumber(
+    await invoke<unknown>("enqueue_upload", { connectionId, localPath, remoteDir }),
+    "id",
+  );
+}
+
+/** Cancela un trabajo encolado o en marcha. */
+export async function cancelTransfer(id: number): Promise<void> {
+  await invoke("cancel_transfer", { id });
+}
+
+/** Elimina los trabajos terminados, fallidos o cancelados. */
+export async function clearTransfers(): Promise<void> {
+  await invoke("clear_transfers");
+}
+
+/** Devuelve el estado actual de la cola de transferencias. */
+export async function listTransfers(): Promise<TransferDto[]> {
+  return parseTransferList(await invoke<unknown>("list_transfers"));
+}
+
+/** Suscribe la UI a los cambios de la cola, descartando cargas mal formadas. */
+export async function onTransfers(listener: (jobs: TransferDto[]) => void): Promise<() => void> {
+  const unlisten = await listen<unknown>("transfers", (event) => {
+    try {
+      listener(parseTransferList(event.payload));
+    } catch {
+      // Una carga inesperada se ignora sin romper la suscripción.
+    }
+  });
+  return () => {
+    unlisten();
+  };
 }
 
 /** Estrecha un error IPC; Option::None se serializa como fingerprint: null. */
