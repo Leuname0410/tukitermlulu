@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type JSX, type KeyboardEvent 
 import type { EntryDto } from "../lib/api";
 import { isCommandError, sftpHome, sftpList } from "../lib/api";
 import { formatSize, joinPath, parentPath, sortEntries, type SortKey } from "./sidebarModel";
+import { useFileDrop } from "./useFileDrop";
 
 export interface SftpSidebarProps {
   connectionId: number;
@@ -35,6 +36,7 @@ export function SftpSidebar({
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef(0);
   const pathChangeRef = useRef(onPathChange);
+  const sidebarRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     pathChangeRef.current = onPathChange;
@@ -73,6 +75,14 @@ export function SftpSidebar({
     },
     [list],
   );
+
+  const dropActive = useFileDrop({
+    connectionId,
+    currentPath,
+    sidebarRef,
+    onError: setError,
+    onRefresh: () => navigate(currentPath),
+  });
 
   useEffect(() => {
     const token = ++requestRef.current;
@@ -123,7 +133,14 @@ export function SftpSidebar({
   const sorted = sortEntries(entries, sort.key, sort.ascending);
 
   return (
-    <aside aria-label="Explorador SFTP" aria-busy={busy} style={{ width: 280 }}>
+    <aside
+      ref={sidebarRef}
+      aria-label="Explorador SFTP"
+      aria-busy={busy}
+      data-drop-active={dropActive ? "true" : "false"}
+      style={{ width: 280 }}
+    >
+      {dropActive && <p role="status">Soltar para subir</p>}
       <div>
         <input
           aria-label="Ruta remota"

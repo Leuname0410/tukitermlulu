@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 export type AuthArgs =
   | { kind: "password"; remember: boolean }
@@ -98,6 +99,12 @@ export interface EntryDto {
   isDir: boolean;
   size: number;
 }
+
+/** Evento de arrastre del SO, con coordenadas físicas relativas al webview. */
+export type FileDropEvent =
+  | { kind: "over"; x: number; y: number }
+  | { kind: "drop"; paths: string[]; x: number; y: number }
+  | { kind: "leave" };
 
 export interface TerminalHandlers {
   onData: (bytes: Uint8Array) => void;
@@ -465,6 +472,33 @@ export async function onTransfers(listener: (jobs: TransferDto[]) => void): Prom
       listener(parseTransferList(event.payload));
     } catch {
       // Una carga inesperada se ignora sin romper la suscripción.
+    }
+  });
+  return () => {
+    unlisten();
+  };
+}
+
+/** Suscribe la UI a los archivos arrastrados desde el sistema operativo. */
+export async function onFileDrop(listener: (event: FileDropEvent) => void): Promise<() => void> {
+  const unlisten = await getCurrentWebview().onDragDropEvent((event) => {
+    const payload = event.payload;
+    switch (payload.type) {
+      case "enter":
+      case "over":
+        listener({ kind: "over", x: payload.position.x, y: payload.position.y });
+        break;
+      case "drop":
+        listener({
+          kind: "drop",
+          paths: payload.paths,
+          x: payload.position.x,
+          y: payload.position.y,
+        });
+        break;
+      case "leave":
+        listener({ kind: "leave" });
+        break;
     }
   });
   return () => {
