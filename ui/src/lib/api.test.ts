@@ -388,7 +388,7 @@ describe("typed terminal api", () => {
     });
   });
 
-  it("should reject malformed responses when listing remote entries", async () => {
+  it("should reject malformed sftp responses when listing and reading home", async () => {
     const valid = { name: "a", path: "/a", isDir: true, size: 0 };
     for (const raw of [
       null,
@@ -403,9 +403,6 @@ describe("typed terminal api", () => {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
       await expect(sftpList(1, "/")).rejects.toThrow();
     }
-  });
-
-  it("should reject a malformed response when reading the remote home", async () => {
     for (const raw of [null, 7, { path: "/home/alice" }]) {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
       await expect(sftpHome(1)).rejects.toThrow();

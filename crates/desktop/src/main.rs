@@ -16,6 +16,7 @@ use crate::sessions::{
     create_session, delete_folder, delete_session, duplicate_session, list_folders, list_sessions,
     save_folder, update_session,
 };
+use crate::sftp::{sftp_home, sftp_list, sftp_mkdir, sftp_remove, sftp_rename};
 use crate::terminal::{AppState, close_tab, connect, disconnect, terminal_resize, terminal_write};
 use crate::transfers::{
     cancel_transfer, clear_transfers, enqueue_download, enqueue_upload, list_transfers,
@@ -60,7 +61,12 @@ fn main() {
             enqueue_upload,
             cancel_transfer,
             clear_transfers,
-            list_transfers
+            list_transfers,
+            sftp_home,
+            sftp_list,
+            sftp_mkdir,
+            sftp_rename,
+            sftp_remove
         ])
         .run(tauri::generate_context!())
     {

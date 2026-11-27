@@ -92,6 +92,13 @@ export interface TransferDto {
   error: string | null;
 }
 
+export interface EntryDto {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+}
+
 export interface TerminalHandlers {
   onData: (bytes: Uint8Array) => void;
   onClosed: (exitStatus: number | null) => void;
@@ -273,6 +280,23 @@ function parseTransferList(value: unknown): TransferDto[] {
   return value.map(parseTransfer);
 }
 
+function parseEntry(value: unknown): EntryDto {
+  const entry = asRecord(value);
+  return {
+    name: readString(entry.name, "name"),
+    path: readString(entry.path, "path"),
+    isDir: readBoolean(entry.isDir, "isDir"),
+    size: readNumber(entry.size, "size"),
+  };
+}
+
+function parseEntryList(value: unknown): EntryDto[] {
+  if (!Array.isArray(value)) {
+    throw new Error("El backend devolvió una lista de entradas inválida");
+  }
+  return value.map(parseEntry);
+}
+
 /** Conecta una pestaña y entrega la salida del PTY a los handlers, sin estado de React. */
 export async function connect(
   tabId: number,
@@ -407,6 +431,31 @@ export async function clearTransfers(): Promise<void> {
 /** Devuelve el estado actual de la cola de transferencias. */
 export async function listTransfers(): Promise<TransferDto[]> {
   return parseTransferList(await invoke<unknown>("list_transfers"));
+}
+
+/** Devuelve el directorio inicial de SFTP de la conexión indicada. */
+export async function sftpHome(connectionId: number): Promise<string> {
+  return readString(await invoke<unknown>("sftp_home", { connectionId }), "home");
+}
+
+/** Lista el directorio remoto indicado con carpetas primero y orden por nombre. */
+export async function sftpList(connectionId: number, path: string): Promise<EntryDto[]> {
+  return parseEntryList(await invoke<unknown>("sftp_list", { connectionId, path }));
+}
+
+/** Crea un directorio en la conexión indicada. */
+export async function sftpMkdir(connectionId: number, path: string): Promise<void> {
+  await invoke("sftp_mkdir", { connectionId, path });
+}
+
+/** Renombra una entrada remota. */
+export async function sftpRename(connectionId: number, from: string, to: string): Promise<void> {
+  await invoke("sftp_rename", { connectionId, from, to });
+}
+
+/** Elimina una entrada remota. */
+export async function sftpRemove(connectionId: number, path: string): Promise<void> {
+  await invoke("sftp_remove", { connectionId, path });
 }
 
 /** Suscribe la UI a los cambios de la cola, descartando cargas mal formadas. */
