@@ -1,14 +1,24 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CommandError, EntryDto } from "../lib/api";
+import type { CommandError, EntryDto, FileDropEvent, TransferDto } from "../lib/api";
 import { sftpHome, sftpList } from "../lib/api";
 import { SftpSidebar } from "./SftpSidebar";
 import { formatSize, parentPath, sortEntries } from "./sidebarModel";
+import { toCssPoint } from "./useFileDrop";
+
+const { enqueueUpload, onFileDrop, onTransfers } = vi.hoisted(() => ({
+  enqueueUpload: vi.fn(),
+  onFileDrop: vi.fn(),
+  onTransfers: vi.fn(),
+}));
 
 vi.mock("../lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/api")>();
   return {
     ...actual,
+    enqueueUpload,
+    onFileDrop,
+    onTransfers,
     sftpHome: vi.fn(),
     sftpList: vi.fn(),
   };
@@ -32,6 +42,51 @@ function rows(grid: HTMLElement): string[] {
   return within(grid)
     .getAllByRole("row")
     .map((row) => row.textContent ?? "");
+}
+
+function dropHandler(): (event: FileDropEvent) => void {
+  const handler = onFileDrop.mock.calls[0]?.[0];
+  if (typeof handler !== "function") throw new Error("onFileDrop no fue invocado");
+  return handler as (event: FileDropEvent) => void;
+}
+
+function transferHandler(): (jobs: TransferDto[]) => void {
+  const handler = onTransfers.mock.calls[0]?.[0];
+  if (typeof handler !== "function") throw new Error("onTransfers no fue invocado");
+  return handler as (jobs: TransferDto[]) => void;
+}
+
+function sidebarRect(width: number, height: number): void {
+  screen.getByLabelText("Explorador SFTP").getBoundingClientRect = () =>
+    ({
+      left: 10,
+      top: 10,
+      right: 10 + width,
+      bottom: 10 + height,
+      width,
+      height,
+      x: 10,
+      y: 10,
+      toJSON: () => ({}),
+    }) as DOMRect;
+}
+
+function dpr(value: number): void {
+  Object.defineProperty(window, "devicePixelRatio", { configurable: true, value });
+}
+
+function done(remote: string): TransferDto {
+  return {
+    id: 5,
+    connectionId: 1,
+    direction: "upload",
+    remote,
+    local: "C:/a.txt",
+    state: "done",
+    transferred: 4,
+    total: 4,
+    error: null,
+  };
 }
 
 describe("sidebarModel", () => {
@@ -90,10 +145,16 @@ describe("SftpSidebar", () => {
   beforeEach(() => {
     vi.mocked(sftpHome).mockReset().mockResolvedValue("/home/alice");
     vi.mocked(sftpList).mockReset().mockResolvedValue([entry("file2", false, 2), entry("docs", true)]);
+    enqueueUpload.mockReset().mockResolvedValue(1);
+    onFileDrop.mockReset().mockResolvedValue(() => {});
+    onTransfers.mockReset().mockResolvedValue(() => {});
+    dpr(1);
   });
 
   afterEach(() => {
     cleanup();
+    dpr(1);
+    vi.restoreAllMocks();
   });
 
   it("should call sftpHome then sftpList and show folders first when mounted", async () => {
@@ -235,5 +296,97 @@ describe("SftpSidebar", () => {
     await waitFor(() => {
       expect(screen.getByLabelText("Explorador SFTP").getAttribute("aria-busy")).toBe("false");
     });
+  });
+});
+
+it("should convert physical pixels to CSS pixels with devicePixelRatio 1 and 2", () => {
+  expect(toCssPoint(120, 80, 1)).toEqual({ x: 120, y: 80 });
+  expect(toCssPoint(120, 80, 2)).toEqual({ x: 60, y: 40 });
+});
+
+describe("SftpSidebar file drops", () => {
+  beforeEach(() => {
+    vi.mocked(sftpHome).mockReset().mockResolvedValue("/home/alice");
+    vi.mocked(sftpList).mockReset().mockResolvedValue([entry("file2", false, 2), entry("docs", true)]);
+    enqueueUpload.mockReset().mockResolvedValue(1);
+    onFileDrop.mockReset().mockResolvedValue(() => {});
+    onTransfers.mockReset().mockResolvedValue(() => {});
+    dpr(1);
+  });
+
+  afterEach(() => {
+    cleanup();
+    dpr(1);
+    vi.restoreAllMocks();
+  });
+
+  async function subscribed(): Promise<void> {
+    render(<SftpSidebar connectionId={1} />);
+    await screen.findByText("docs");
+    await waitFor(() => {
+      expect(onFileDrop).toHaveBeenCalled();
+      expect(onTransfers).toHaveBeenCalled();
+    });
+  }
+
+  it("should enqueue each dropped file when the drop lands inside the visible sidebar", async () => {
+    dpr(2);
+    await subscribed();
+    sidebarRect(200, 100);
+    act(() => dropHandler()({ kind: "drop", paths: ["C:/a.txt", "C:/b.txt"], x: 100, y: 100 }));
+    await waitFor(() => expect(enqueueUpload).toHaveBeenCalledTimes(2));
+    expect(enqueueUpload).toHaveBeenNthCalledWith(1, 1, "C:/a.txt", "/home/alice");
+    expect(enqueueUpload).toHaveBeenNthCalledWith(2, 1, "C:/b.txt", "/home/alice");
+  });
+
+  it("should ignore drops outside the sidebar or on a hidden tab", async () => {
+    await subscribed();
+    sidebarRect(200, 100);
+    act(() => dropHandler()({ kind: "drop", paths: ["C:/a.txt"], x: 300, y: 300 }));
+    sidebarRect(0, 0);
+    act(() => dropHandler()({ kind: "drop", paths: ["C:/b.txt"], x: 50, y: 50 }));
+    expect(enqueueUpload).not.toHaveBeenCalled();
+  });
+
+  it("should highlight the sidebar on over and clear the highlight on leave", async () => {
+    await subscribed();
+    sidebarRect(200, 100);
+    const sidebar = screen.getByLabelText("Explorador SFTP");
+    act(() => dropHandler()({ kind: "over", x: 50, y: 50 }));
+    expect(sidebar.getAttribute("data-drop-active")).toBe("true");
+    expect(screen.getByText("Soltar para subir")).toBeTruthy();
+    act(() => dropHandler()({ kind: "leave" }));
+    expect(sidebar.getAttribute("data-drop-active")).toBe("false");
+    expect(screen.queryByText("Soltar para subir")).toBeNull();
+  });
+
+  it("should show the error and keep enqueueing the other files when one upload fails", async () => {
+    enqueueUpload.mockRejectedValueOnce(new Error("No se pudo subir a.txt")).mockResolvedValue(2);
+    await subscribed();
+    sidebarRect(200, 100);
+    act(() => dropHandler()({ kind: "drop", paths: ["a.txt", "b.txt"], x: 50, y: 50 }));
+    await waitFor(() => expect(enqueueUpload).toHaveBeenCalledTimes(2));
+    expect((await screen.findByRole("alert")).textContent).toContain("No se pudo subir a.txt");
+  });
+
+  it("should warn when the backend rejects a dropped folder", async () => {
+    enqueueUpload.mockRejectedValueOnce({ kind: "invalid_input", message: "local path must be a file" });
+    await subscribed();
+    sidebarRect(200, 100);
+    act(() => dropHandler()({ kind: "drop", paths: ["C:/docs"], x: 50, y: 50 }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Las carpetas aún no se pueden subir");
+  });
+
+  it("should relist the current folder at most once per second when an upload finishes there", async () => {
+    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    await subscribed();
+    act(() => transferHandler()([done("/home/alice/a.txt")]));
+    await waitFor(() => expect(sftpList).toHaveBeenCalledTimes(2));
+    expect(sftpList).toHaveBeenLastCalledWith(1, "/home/alice");
+    act(() => transferHandler()([done("/srv/a.txt"), done("/home/alice/b.txt")]));
+    expect(sftpList).toHaveBeenCalledTimes(2);
+    clock.mockReturnValue(3_000);
+    act(() => transferHandler()([done("/home/alice/c.txt")]));
+    await waitFor(() => expect(sftpList).toHaveBeenCalledTimes(3));
   });
 });

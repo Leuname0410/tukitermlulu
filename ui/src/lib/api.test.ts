@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AuthArgs,
   type ConnectArgs,
   type ConnectResponse,
+  type FileDropEvent,
   type FolderDto,
   type PasswordInput,
   type SessionDto,
@@ -25,6 +27,7 @@ import {
   listFolders,
   listSessions,
   listTransfers,
+  onFileDrop,
   onTransfers,
   saveFolder,
   sftpHome,
@@ -36,6 +39,8 @@ import {
   terminalWrite,
   updateSession,
 } from "./api";
+
+const { onDragDropEvent } = vi.hoisted(() => ({ onDragDropEvent: vi.fn() }));
 
 vi.mock("@tauri-apps/api/core", () => {
   class MockChannel {
@@ -50,6 +55,8 @@ vi.mock("@tauri-apps/api/core", () => {
 });
 
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
+
+vi.mock("@tauri-apps/api/webview", () => ({ getCurrentWebview: vi.fn() }));
 
 interface ChannelLike {
   onmessage?: (message: unknown) => void;
@@ -145,6 +152,11 @@ describe("typed terminal api", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
     vi.mocked(listen).mockReset();
+    vi.mocked(getCurrentWebview).mockReset();
+    onDragDropEvent.mockReset();
+    vi.mocked(getCurrentWebview).mockReturnValue({
+      onDragDropEvent,
+    } as unknown as ReturnType<typeof getCurrentWebview>);
   });
 
   it("should invoke connect with two channels and return typed ids when backend connects", async () => {
@@ -428,6 +440,36 @@ describe("typed terminal api", () => {
     handler({ payload: { ...transferRaw, direction: "sideways" } });
     handler({ payload: null });
     expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("should normalize OS drag drop events when subscribing to file drops", async () => {
+    const unlisten = vi.fn();
+    onDragDropEvent.mockResolvedValueOnce(unlisten);
+    const listener = vi.fn<(event: FileDropEvent) => void>();
+
+    const unsubscribe = await onFileDrop(listener);
+
+    expect(getCurrentWebview).toHaveBeenCalledTimes(1);
+    const call = onDragDropEvent.mock.calls[0];
+    if (!call) {
+      throw new Error("onDragDropEvent no fue invocado");
+    }
+    const handler = call[0] as (event: { payload: unknown }) => void;
+    handler({ payload: { type: "enter", paths: ["a.txt"], position: { x: 10, y: 20 } } });
+    handler({ payload: { type: "over", position: { x: 11, y: 21 } } });
+    handler({
+      payload: { type: "drop", paths: ["a.txt", "b.txt"], position: { x: 12, y: 22 } },
+    });
+    handler({ payload: { type: "leave" } });
+    expect(listener.mock.calls.map(([event]) => event)).toEqual([
+      { kind: "over", x: 10, y: 20 },
+      { kind: "over", x: 11, y: 21 },
+      { kind: "drop", paths: ["a.txt", "b.txt"], x: 12, y: 22 },
+      { kind: "leave" },
+    ]);
 
     unsubscribe();
     expect(unlisten).toHaveBeenCalledTimes(1);
