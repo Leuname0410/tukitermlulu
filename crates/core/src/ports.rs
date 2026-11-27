@@ -63,6 +63,14 @@ impl PtySize {
     }
 }
 
+/// Salida de un comando ejecutado en un canal `exec` separado del PTY.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub status: Option<u32>,
+}
+
 /// Secreto de texto retenido solo en memoria.
 pub struct SecretString(Zeroizing<String>);
 
@@ -202,6 +210,12 @@ pub trait SshTransport: Send + Sync {
         size: PtySize,
         sink: Box<dyn PtySink>,
     ) -> impl Future<Output = Result<ChannelId, TransportError>> + Send;
+    /// Ejecuta un comando en un canal aparte, sin tocar el PTY del usuario.
+    fn exec(
+        &self,
+        conn: ConnectionId,
+        command: &str,
+    ) -> impl Future<Output = Result<ExecOutput, TransportError>> + Send;
     fn write(
         &self,
         channel: ChannelId,
@@ -508,6 +522,26 @@ mod tests {
             Box::pin(async { Ok(()) })
         });
         assert!(block_on(mock.write(ChannelId::new(4), b"ls\n")).is_ok());
+    }
+
+    #[test]
+    fn should_mock_ssh_transport_when_executing_a_command() {
+        let mut mock = MockSshTransport::new();
+        mock.expect_exec()
+            .once()
+            .withf(|conn, command| *conn == ConnectionId::new(6) && *command == "echo hola")
+            .returning(|_, _| {
+                Box::pin(async {
+                    Ok(ExecOutput {
+                        stdout: b"hola\n".to_vec(),
+                        stderr: Vec::new(),
+                        status: Some(0),
+                    })
+                })
+            });
+        let output = block_on(mock.exec(ConnectionId::new(6), "echo hola")).unwrap();
+        assert_eq!(output.stdout, b"hola\n");
+        assert_eq!(output.status, Some(0));
     }
 
     #[test]

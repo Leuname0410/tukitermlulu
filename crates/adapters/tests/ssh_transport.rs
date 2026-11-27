@@ -10,6 +10,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::ssh_transport::RusshTransport;
+use tuki_application::shell_integration::{classify, ShellKind, PROBE_COMMAND};
 use tuki_core::auth::KeyRef;
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::TransportError;
@@ -445,5 +446,45 @@ async fn should_share_connections_when_closing_through_a_transport_clone() {
     let clone = transport.clone();
     let connected = clone.connect(&test_host()).await.unwrap();
 
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_return_stdout_and_zero_status_when_executing_a_command() {
+    let (transport, connected) = authenticated_host().await;
+    let output = transport.exec(connected.id, "echo hola").await.unwrap();
+    assert_eq!(output.stdout, b"hola\n");
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.status, Some(0));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_return_nonzero_status_when_executing_an_unknown_command() {
+    let (transport, connected) = authenticated_host().await;
+    let output = transport
+        .exec(connected.id, "tuki_comando_inexistente")
+        .await
+        .unwrap();
+    assert_ne!(output.status, Some(0));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_classify_probe_as_unknown_when_remote_shell_is_ash() {
+    let (transport, connected) = authenticated_host().await;
+    let output = transport.exec(connected.id, PROBE_COMMAND).await.unwrap();
+    assert_eq!(classify(&output), ShellKind::Unknown);
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_cap_output_at_64_kib_when_exec_writes_more() {
+    let (transport, connected) = authenticated_host().await;
+    let output = transport
+        .exec(connected.id, "dd if=/dev/zero bs=1024 count=128 2>/dev/null")
+        .await
+        .unwrap();
+    assert_eq!(output.stdout.len(), 64 * 1024);
     assert!(transport.close(connected.id).await.is_ok());
 }
