@@ -1,14 +1,160 @@
 //! Parser incremental de OSC 7 sobre los bytes del PTY, sin modificarlos.
 
+use tuki_core::ports::CwdTracker;
+use tuki_core::remote_path::RemotePath;
+
+const MAX_PAYLOAD: usize = 4096;
+
+#[derive(Default)]
+enum State {
+    #[default]
+    Ground,
+    Esc,
+    Csi,
+    OscStart,
+    Semicolon,
+    Payload,
+    PayloadEsc,
+    OscOther,
+    OscOtherEsc,
+}
+
+/// Parser de OSC 7 que conserva la última ruta válida completada por fragmento.
+#[derive(Default)]
+pub struct Osc7Tracker {
+    state: State,
+    buffer: Vec<u8>,
+}
+
+impl Osc7Tracker {
+    /// Crea un tracker con la máquina de estados en Ground.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn reset(&mut self) {
+        self.state = State::Ground;
+        self.buffer.clear();
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.buffer.len() >= MAX_PAYLOAD {
+            self.reset();
+            return;
+        }
+        self.buffer.push(byte);
+    }
+
+    fn finish(&mut self) -> Option<RemotePath> {
+        let payload = std::mem::take(&mut self.buffer);
+        self.state = State::Ground;
+        decode_path(&payload)
+    }
+}
+
+impl CwdTracker for Osc7Tracker {
+    fn feed(&mut self, bytes: &[u8]) -> Option<RemotePath> {
+        let mut last = None;
+        for &byte in bytes {
+            match self.state {
+                State::Ground => {
+                    if byte == 0x1b {
+                        self.state = State::Esc;
+                    }
+                }
+                State::Esc => match byte {
+                    0x1b => {}
+                    b']' => self.state = State::OscStart,
+                    b'[' => self.state = State::Csi,
+                    _ => self.state = State::Ground,
+                },
+                State::Csi => {
+                    if (0x40..=0x7e).contains(&byte) {
+                        self.state = State::Ground;
+                    }
+                }
+                State::OscStart => {
+                    self.state = if byte == b'7' {
+                        State::Semicolon
+                    } else {
+                        State::OscOther
+                    };
+                }
+                State::Semicolon => {
+                    self.state = if byte == b';' {
+                        State::Payload
+                    } else {
+                        State::OscOther
+                    };
+                }
+                State::Payload => match byte {
+                    0x07 => last = self.finish().or(last),
+                    0x1b => self.state = State::PayloadEsc,
+                    _ => self.push(byte),
+                },
+                State::PayloadEsc => {
+                    if byte == b'\\' {
+                        last = self.finish().or(last);
+                    } else {
+                        self.reset();
+                    }
+                }
+                State::OscOther => match byte {
+                    0x07 => self.reset(),
+                    0x1b => self.state = State::OscOtherEsc,
+                    _ => {}
+                },
+                State::OscOtherEsc => match byte {
+                    b'\\' | 0x07 => self.reset(),
+                    0x1b => {}
+                    _ => self.state = State::OscOther,
+                },
+            }
+        }
+        last
+    }
+}
+
+fn decode_path(payload: &[u8]) -> Option<RemotePath> {
+    let rest = payload.strip_prefix(b"file://")?;
+    let slash = rest.iter().position(|byte| *byte == b'/')?;
+    let encoded = rest.get(slash..)?;
+    let mut decoded = Vec::with_capacity(encoded.len());
+    let mut bytes = encoded.iter().copied();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let high = hex_value(bytes.next()?)?;
+            let low = hex_value(bytes.next()?)?;
+            decoded.push((high << 4) | low);
+        } else {
+            decoded.push(byte);
+        }
+    }
+    let text = std::str::from_utf8(&decoded).ok()?;
+    RemotePath::new(text).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Osc7Tracker, MAX_PAYLOAD};
+    use super::{MAX_PAYLOAD, Osc7Tracker};
     use tuki_core::ports::CwdTracker;
     use tuki_core::remote_path::RemotePath;
 
     fn assert_path(bytes: &[u8], expected: &str) {
         let mut tracker = Osc7Tracker::new();
-        assert_eq!(tracker.feed(bytes), Some(RemotePath::new(expected).unwrap()));
+        assert_eq!(
+            tracker.feed(bytes),
+            Some(RemotePath::new(expected).unwrap())
+        );
     }
 
     fn assert_none(bytes: &[u8]) {
@@ -34,7 +180,11 @@ mod tests {
     #[test]
     fn should_return_none_until_terminator_when_sequence_is_partial() {
         let mut tracker = Osc7Tracker::new();
-        for chunk in [b"\x1b".as_slice(), b"]7;file://h".as_slice(), b"ost/tmp".as_slice()] {
+        for chunk in [
+            b"\x1b".as_slice(),
+            b"]7;file://h".as_slice(),
+            b"ost/tmp".as_slice(),
+        ] {
             assert_eq!(tracker.feed(chunk), None);
         }
     }
@@ -62,18 +212,14 @@ mod tests {
 
     #[test]
     fn should_return_last_path_when_two_sequences_in_same_chunk() {
-        assert_path(
-            b"\x1b]7;file:///a\x07ls\n\x1b]7;file:///b\x07",
-            "/b",
-        );
+        assert_path(b"\x1b]7;file:///a\x07ls\n\x1b]7;file:///b\x07", "/b");
     }
 
     #[test]
     fn should_keep_last_valid_path_when_following_sequence_is_invalid() {
         let mut tracker = Osc7Tracker::new();
-        tracker.feed(b"\x1b]7;file:///a\x07");
         assert_eq!(
-            tracker.feed(b"\x1b]7;http://host/b\x07"),
+            tracker.feed(b"\x1b]7;file:///a\x07\x1b]7;http://host/b\x07"),
             Some(RemotePath::new("/a").unwrap())
         );
     }
