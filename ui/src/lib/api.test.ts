@@ -69,6 +69,7 @@ interface ConnectPayload {
   args: ConnectArgs;
   onOutput: ChannelLike;
   onClosed: ChannelLike;
+  onCwd: ChannelLike;
 }
 
 function connectPayload(call: Parameters<typeof invoke>): ConnectPayload {
@@ -161,7 +162,7 @@ describe("typed terminal api", () => {
     } as unknown as ReturnType<typeof getCurrentWebview>);
   });
 
-  it("should invoke connect with two channels and return typed ids when backend connects", async () => {
+  it("should invoke connect with three channels and return typed ids when backend connects", async () => {
     vi.mocked(invoke).mockResolvedValueOnce({
       kind: "connected",
       connection_id: 1,
@@ -179,6 +180,8 @@ describe("typed terminal api", () => {
     expect(payload.tabId).toBe(7);
     expect(payload.args).toBe(request);
     expect(payload.onOutput).not.toBe(payload.onClosed);
+    expect(payload.onCwd).not.toBe(payload.onOutput);
+    expect(payload.onCwd).not.toBe(payload.onClosed);
     expect(response).toEqual({ kind: "connected", connectionId: 1, channelId: 2 });
   });
 
@@ -203,6 +206,39 @@ describe("typed terminal api", () => {
     expect(onClosed).toHaveBeenCalledWith(7);
     payload.onClosed.onmessage?.({ exit_status: null });
     expect(onClosed).toHaveBeenLastCalledWith(null);
+  });
+
+  it("should deliver cwd changes and discard malformed messages when channel messages arrive", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      kind: "connected",
+      connection_id: 1,
+      channel_id: 2,
+    });
+    const onCwd = vi.fn<(path: string) => void>();
+
+    await connect(7, args(), { onData: () => {}, onClosed: () => {}, onCwd });
+
+    const { onCwd: channel } = connectPayload(firstCall());
+    channel.onmessage?.({ path: "/tmp" });
+    expect(onCwd).toHaveBeenCalledTimes(1);
+    expect(onCwd).toHaveBeenCalledWith("/tmp");
+
+    for (const malformed of [null, {}, { path: 7 }, { path: null }, ""]) {
+      channel.onmessage?.(malformed);
+    }
+    expect(onCwd).toHaveBeenCalledTimes(1);
+  });
+
+  it("should ignore cwd messages when no handler is provided", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      kind: "connected",
+      connection_id: 1,
+      channel_id: 2,
+    });
+
+    await connect(7, args(), { onData: () => {}, onClosed: () => {} });
+
+    connectPayload(firstCall()).onCwd.onmessage?.({ path: "/tmp" });
   });
 
   it("should map approval and prompts when backend requests them", async () => {

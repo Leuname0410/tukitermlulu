@@ -423,11 +423,48 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tauri::ipc::{Channel, InvokeResponseBody};
+    use tuki_adapters::cwd_tracker::Osc7Tracker;
     use tuki_adapters::session_repository::SqliteSessionRepository;
     use tuki_core::port_errors::{HostKeyError, KeyError, SecretError, TransportError};
-    use tuki_core::ports::{ChannelId, ConnectionId, HostKeyFingerprint, PtySize};
+    use tuki_core::ports::{ChannelId, ConnectionId, CwdTracker, HostKeyFingerprint, PtySize};
 
     use super::*;
+
+    fn noop_cwd() -> Channel<CwdChanged> {
+        Channel::new(move |_body: CwdChanged| Ok(()))
+    }
+
+    /// Crea un sink que captura la salida raw y las rutas emitidas por el canal de cwd.
+    fn recording_sink() -> (
+        ChannelSink,
+        Arc<Mutex<Vec<InvokeResponseBody>>>,
+        Arc<Mutex<Vec<String>>>,
+    ) {
+        let output_bytes = Arc::new(Mutex::new(Vec::new()));
+        let output = {
+            let seen = Arc::clone(&output_bytes);
+            Channel::new(move |body| {
+                seen.lock().unwrap().push(body);
+                Ok(())
+            })
+        };
+        let cwd_paths = Arc::new(Mutex::new(Vec::new()));
+        let cwd = {
+            let seen = Arc::clone(&cwd_paths);
+            Channel::new(move |body: CwdChanged| {
+                seen.lock().unwrap().push(body.path);
+                Ok(())
+            })
+        };
+        let sink = ChannelSink {
+            output,
+            closed: Channel::new(move |_body: TerminalClosed| Ok(())),
+            tracker: Osc7Tracker::new(),
+            last_cwd: None,
+            cwd,
+        };
+        (sink, output_bytes, cwd_paths)
+    }
 
     fn block_on<F: Future>(future: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
@@ -473,7 +510,13 @@ mod tests {
                 Ok(())
             })
         };
-        let mut sink = ChannelSink { output, closed };
+        let mut sink = ChannelSink {
+            output,
+            closed,
+            tracker: Osc7Tracker::new(),
+            last_cwd: None,
+            cwd: noop_cwd(),
+        };
 
         sink.data(&[1, 2, 3]);
         sink.closed(Some(0));
@@ -485,6 +528,54 @@ mod tests {
             other => panic!("cuerpo inesperado: {other:?}"),
         }
         assert_eq!(*exit_status.lock().unwrap(), Some(0));
+    }
+
+    #[test]
+    fn should_forward_osc7_path_without_modifying_raw_output_when_pty_writes() {
+        let chunk = b"prompt $ \x1b]7;file://host/tmp\x07ls\n";
+        let (mut sink, output_bytes, cwd_paths) = recording_sink();
+
+        sink.data(chunk);
+
+        let bodies = output_bytes.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        match &bodies[0] {
+            InvokeResponseBody::Raw(bytes) => assert_eq!(bytes.as_slice(), chunk),
+            other => panic!("cuerpo inesperado: {other:?}"),
+        }
+        assert_eq!(*cwd_paths.lock().unwrap(), vec!["/tmp".to_owned()]);
+        assert_eq!(
+            serde_json::to_string(&CwdChanged {
+                path: "/tmp".to_owned()
+            })
+            .unwrap(),
+            r#"{"path":"/tmp"}"#
+        );
+    }
+
+    #[test]
+    fn should_emit_cwd_only_when_the_path_changes() {
+        let (mut sink, _, cwd_paths) = recording_sink();
+
+        sink.data(b"\x1b]7;file:///tmp\x07");
+        sink.data(b"cd . \x1b]7;file:///tmp\x07");
+        sink.data(b"\x1b]7;file:///var\x07");
+
+        assert_eq!(
+            *cwd_paths.lock().unwrap(),
+            vec!["/tmp".to_owned(), "/var".to_owned()]
+        );
+    }
+
+    #[test]
+    fn should_emit_cwd_once_when_osc7_is_split_across_chunks() {
+        let (mut sink, _, cwd_paths) = recording_sink();
+
+        sink.data(b"prefix \x1b]7;file://host/tm");
+        assert!(cwd_paths.lock().unwrap().is_empty());
+        sink.data(b"p\x07");
+
+        assert_eq!(*cwd_paths.lock().unwrap(), vec!["/tmp".to_owned()]);
     }
 
     #[test]

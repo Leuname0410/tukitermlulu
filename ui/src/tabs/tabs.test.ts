@@ -99,6 +99,16 @@ describe("tabsReducer", () => {
     expect(next[0]?.status).toEqual({ kind: "dropped", exitStatus: null });
   });
 
+  it("should update only the targeted tab cwd when the directory changes", () => {
+    const tabs = [tab(), tab({ id: 8 })];
+
+    const next = tabsReducer(tabs, { type: "cwd", id: 7, path: "/tmp" });
+
+    expect(next[0]?.cwd).toBe("/tmp");
+    expect(next[1]?.cwd).toBeUndefined();
+    expect(tabs[0]?.cwd).toBeUndefined();
+  });
+
   it("should remove the tab when it is closed", () => {
     expect(tabsReducer([tab(), tab({ id: 8 })], { type: "closed", id: 7 })).toEqual([
       tab({ id: 8 }),
@@ -112,6 +122,7 @@ describe("tabsReducer", () => {
       { type: "resolved", id: 99, response: { kind: "needs_password" } },
       { type: "failed", id: 99, error: { kind: "io", message: "boom" } },
       { type: "remote_closed", id: 99, exitStatus: 1 },
+      { type: "cwd", id: 99, path: "/tmp" },
       { type: "closed", id: 99 },
     ];
     for (const action of actions) {
@@ -142,7 +153,11 @@ describe("createTabController", () => {
     expect(vi.mocked(connect)).toHaveBeenCalledWith(
       7,
       { ...target, rows: 24, cols: 80, password: "s3cret" },
-      expect.objectContaining({ onData: expect.any(Function), onClosed: expect.any(Function) }),
+      expect.objectContaining({
+        onData: expect.any(Function),
+        onClosed: expect.any(Function),
+        onCwd: expect.any(Function),
+      }),
     );
   });
 
@@ -182,6 +197,18 @@ describe("createTabController", () => {
 
     expect(h.actions).toContainEqual({ type: "remote_closed", id: 7, exitStatus: 9 });
     expect(h.actions).toContainEqual({ type: "remote_closed", id: 7, exitStatus: null });
+  });
+
+  it("should dispatch cwd when the backend reports a directory change", async () => {
+    const h = harness();
+    await h.controller.connect({}, size);
+    const handlers = handlersFromCall();
+
+    handlers.onCwd?.("/tmp");
+    handlers.onCwd?.("/var");
+
+    expect(h.actions).toContainEqual({ type: "cwd", id: 7, path: "/tmp" });
+    expect(h.actions).toContainEqual({ type: "cwd", id: 7, path: "/var" });
   });
 
   it("should flush buffered bytes on attach, stream afterwards and stop on detach", async () => {
