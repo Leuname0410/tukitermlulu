@@ -56,6 +56,17 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-26a | APPROVE | 1 | 7 | rama `feat/T-26a-sftp-chmod` desde T-25. `chmod` + `downloads_dir` |
 | T-26b | APPROVE | 1 | 5 | rama `feat/T-26b-sftp-menu` desde T-26a. Menú contextual, permisos y lista de transferencias. 126 tests UI. MINOR: renombrar en la raíz construye una ruta relativa |
 
+| T-27 | APPROVE | 1 | 2 | rama `feat/T-27-osc7-tracker` desde T-26b. Parser OSC 7 por estados, tope 4096 |
+| T-28a | APPROVE | 1 | 6 | rama `feat/T-28a-cwd-channel` desde T-27. Canal `on_cwd`; salida enviada intacta antes de analizarla |
+| T-28b | APPROVE | 2 | 5 | rama `feat/T-28b-shell-probe` desde T-28a. `exec` en el puerto SSH + sonda + líneas por shell. R1: 3 MAJOR (limpieza antes del marcador, `` `e `` no existe en PS 5.1, `$E` en `echo` de cmd) |
+| T-28c | APPROVE | 1 | 6 (+5 ajustes) | rama `feat/T-28c-shell-flag` desde T-28b. `shell_integration` por sesión, SQLite v2 |
+| T-28d | APPROVE | 2 | 6 | rama `feat/T-28d-shell-inject` desde T-28c. Inyección + `EchoFilter`; `bash`/`zsh`/`fish` en el contenedor. R1 MAJOR: salida desordenada al expirar. MINOR: la tarea espera los 2 s aunque llegue el marcador |
+| T-30 | APPROVE | 1 | 5 | rama `feat/T-30-follow-terminal` desde T-28d. "Seguir terminal" + `RemotePath::from_terminal` |
+
+## F6: cerrada (2026-11-27)
+T-27 → T-28a → T-28b → T-28c → T-28d → T-30 (T-29 descartado por ADR-006). `feat/T-30-follow-terminal` contiene F0–F6 (sin merge a `main`). ADR-006 sigue **Propuesto**.
+Pendiente humano: `just dev` con `tuki-bash`/`tuki-zsh`/`tuki-fish` (`cd /var/log` → el sidebar sigue, sin eco visible; desmarcar → no sigue); PowerShell 5.1 y cmd.exe contra un Windows con OpenSSH.
+
 ## F5: cerrada (2026-11-26)
 T-21 → T-22a → T-22b → T-22c → T-23a → T-23b → T-23c → T-24a → T-25 → T-26a → T-26b. `feat/T-26b-sftp-menu` contiene F0–F5 (sin merge a `main`).
 Pendiente humano: `just dev`: sidebar al conectar, navegar, soltar archivos desde el SO, redimensionar, menú contextual (descargar a Descargas, renombrar, borrar, nueva carpeta, permisos), cancelar una transferencia, 1 GB sin crecer la memoria.
