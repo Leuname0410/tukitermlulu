@@ -108,6 +108,25 @@ mod tests {
     }
 
     #[test]
+    fn should_use_fixed_messages_when_formatting_transfer_errors() {
+        assert_eq!(
+            TransferError::Cancelled.to_string(),
+            "transfer was cancelled"
+        );
+        assert_eq!(TransferError::NotFound.to_string(), "remote path not found");
+        assert_eq!(
+            TransferError::PermissionDenied.to_string(),
+            "permission denied on the remote file system"
+        );
+        assert_eq!(
+            TransferError::AlreadyExists.to_string(),
+            "destination already exists"
+        );
+        assert_eq!(TransferError::LocalIo.to_string(), "local file I/O failed");
+        assert_eq!(TransferError::Remote.to_string(), "remote transfer failed");
+    }
+
+    #[test]
     fn should_use_fixed_messages_when_formatting_key_errors() {
         assert_eq!(
             KeyError::WrongPassphrase.to_string(),

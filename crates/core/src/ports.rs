@@ -486,6 +486,16 @@ mod tests {
     }
 
     #[test]
+    fn should_share_cancellation_state_when_cloning_cancel_token() {
+        let token = CancelToken::default();
+        let clone = token.clone();
+        assert!(!token.is_cancelled());
+        clone.cancel();
+        assert!(token.is_cancelled());
+        assert!(clone.is_cancelled());
+    }
+
+    #[test]
     fn should_mock_cwd_tracker_when_feeding_osc7_bytes() {
         let mut mock = MockCwdTracker::new();
         mock.expect_feed()
