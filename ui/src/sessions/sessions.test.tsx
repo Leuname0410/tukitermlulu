@@ -52,6 +52,7 @@ function makeSession(overrides: Partial<SessionDto> = {}): SessionDto {
     auth: { kind: "password", remember: false },
     folder: null,
     passwordSaved: false,
+    shellIntegration: true,
     ...overrides,
   };
 }
@@ -205,6 +206,50 @@ describe("SessionForm", () => {
     fireEvent.click(within(form).getByRole("button", { name: "Guardar" }));
     await waitFor(() => expect(password.value).toBe(""));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ name: "Nueva" }), { kind: "set", value: "s3cret" });
+  });
+
+  it("should send shell integration enabled by default and disabled when unchecked", async () => {
+    const onSubmit = vi.fn(() => Promise.resolve());
+    render(<SessionForm folders={[]} onSubmit={onSubmit} onCancel={() => undefined} />);
+    const form = screen.getByRole("form", { name: "Nueva sesión" });
+    const checkbox = within(form).getByLabelText(
+      "Seguir el directorio de la terminal (integración de shell)",
+    ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+    fillForm(form);
+
+    fireEvent.click(within(form).getByRole("button", { name: "Guardar" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenCalledWith(
+        expect.objectContaining({ shellIntegration: true }),
+        { kind: "keep" },
+      ),
+    );
+
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(false);
+    fireEvent.click(within(form).getByRole("button", { name: "Guardar" }));
+    await waitFor(() =>
+      expect(onSubmit).toHaveBeenLastCalledWith(
+        expect.objectContaining({ shellIntegration: false }),
+        { kind: "keep" },
+      ),
+    );
+  });
+
+  it("should reflect the stored shell integration when editing", () => {
+    render(
+      <SessionForm
+        initial={makeSession({ shellIntegration: false })}
+        folders={[]}
+        onSubmit={() => Promise.resolve()}
+        onCancel={() => undefined}
+      />,
+    );
+    const checkbox = screen.getByLabelText(
+      "Seguir el directorio de la terminal (integración de shell)",
+    ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
   });
 });
 

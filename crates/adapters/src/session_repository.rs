@@ -320,6 +320,7 @@ fn session_from_row(row: &Row<'_>) -> Result<Session, RepositoryError> {
 mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    use rusqlite::Connection;
     use tuki_core::auth::{AuthMethod, KeyRef};
     use tuki_core::host::{Host, Hostname, Port, Username};
     use tuki_core::port_errors::RepositoryError;
@@ -604,5 +605,48 @@ mod tests {
             panic!("envenenar");
         }));
         assert_eq!(repo.list_sessions().await, Err(RepositoryError::Io));
+    }
+
+    #[tokio::test]
+    async fn should_round_trip_disabled_shell_integration_when_saving_and_getting() {
+        let repo = SqliteSessionRepository::in_memory().expect("repositorio");
+        let session = password_session(1, "prod", None).with_shell_integration(false);
+        repo.save_session(&session).await.expect("guardar");
+        assert_eq!(
+            repo.get_session(SessionId::new(1)).await.expect("leer"),
+            Some(session)
+        );
+    }
+
+    #[tokio::test]
+    async fn should_enable_shell_integration_and_bump_version_when_migrating_v1_database() {
+        let dir = tempfile::tempdir().expect("directorio temporal");
+        let path = dir.path().join("sessions.db");
+        {
+            let conn = Connection::open(&path).expect("abrir v1");
+            conn.execute_batch(MIGRATIONS[0]).expect("migración v1");
+            conn.execute(
+                "INSERT INTO sessions (id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder) \
+                 VALUES (1, 'prod', 'example.com', 22, 'alice', 'password', 0, NULL, 0, NULL)",
+                [],
+            )
+            .expect("sesión v1");
+            conn.pragma_update(None, "user_version", 1_u32).expect("versión v1");
+        }
+
+        let repo = SqliteSessionRepository::open(&path).expect("abrir v2");
+        let version: u32 = repo
+            .conn
+            .lock()
+            .expect("cerrojo")
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .expect("versión");
+        assert_eq!(version, 2);
+        let session = repo
+            .get_session(SessionId::new(1))
+            .await
+            .expect("leer")
+            .expect("sesión");
+        assert!(session.shell_integration);
     }
 }

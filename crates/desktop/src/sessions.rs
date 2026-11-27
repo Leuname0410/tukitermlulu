@@ -391,6 +391,7 @@ mod tests {
             username: "alice".to_owned(),
             auth: AuthDto::Password { remember: true },
             folder: None,
+            shell_integration: None,
         }
     }
 
@@ -517,5 +518,38 @@ mod tests {
         .unwrap();
         let listed = block_on(list(repository.clone(), secrets.clone())).unwrap();
         assert!(!listed[0].password_saved);
+    }
+
+    #[test]
+    fn should_enable_shell_integration_when_input_omits_it() {
+        let raw = r#"{"name":"prod","host":"example.com","port":22,"username":"alice","auth":{"kind":"password","remember":true},"folder":null}"#;
+        let parsed: SessionInput = serde_json::from_str(raw).unwrap();
+        assert!(to_session(parsed, 1).unwrap().shell_integration);
+    }
+
+    #[test]
+    fn should_expose_shell_integration_in_camel_case_when_mapping_dto() {
+        let session = session(7, AuthMethod::Password { remember: false })
+            .with_shell_integration(false);
+        let dto = to_dto(&session, false);
+        assert!(!dto.shell_integration);
+        assert_eq!(
+            serde_json::to_value(&dto).unwrap()["shellIntegration"],
+            serde_json::json!(false)
+        );
+    }
+
+    #[test]
+    fn should_persist_disabled_shell_integration_when_creating_from_input() {
+        let repository = SqliteSessionRepository::in_memory().unwrap();
+        let secrets = SharedSecrets::default();
+        let mut disabled = input();
+        disabled.shell_integration = Some(false);
+
+        let created = block_on(create(repository.clone(), secrets.clone(), disabled, None)).unwrap();
+        assert!(!created.shell_integration);
+        let listed = block_on(list(repository, secrets)).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].shell_integration);
     }
 }

@@ -134,6 +134,24 @@ mod tests {
     }
 
     #[test]
+    fn should_copy_shell_integration_when_duplicating_session() {
+        let mut repo = MockSessionRepository::new();
+        repo.expect_get_session().once().returning(|_| {
+            Box::pin(async { Ok(Some(session(7).with_shell_integration(false))) })
+        });
+        repo.expect_next_session_id()
+            .once()
+            .returning(|| Box::pin(async { Ok(SessionId::new(8)) }));
+        repo.expect_save_session()
+            .once()
+            .withf(|copy| !copy.shell_integration)
+            .returning(|_| Box::pin(async { Ok(()) }));
+
+        let copy = block_on(DuplicateSession::new(repo).execute(SessionId::new(7))).unwrap();
+        assert!(!copy.shell_integration);
+    }
+
+    #[test]
     fn should_return_not_found_when_duplicating_missing_session() {
         let mut repo = MockSessionRepository::new();
         repo.expect_get_session()

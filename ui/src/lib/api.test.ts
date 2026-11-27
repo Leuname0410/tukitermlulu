@@ -109,6 +109,7 @@ const sessionInput: SessionInput = {
   username: "alice",
   auth: { kind: "password", remember: true },
   folder: null,
+  shellIntegration: true,
 };
 
 const sessionRaw = {
@@ -120,6 +121,7 @@ const sessionRaw = {
   auth: { kind: "password", remember: true },
   folder: null,
   passwordSaved: true,
+  shellIntegration: true,
 };
 
 const sessionDto: SessionDto = { ...sessionInput, folder: null, id: 1, passwordSaved: true };
@@ -310,6 +312,14 @@ describe("typed terminal api", () => {
     }
   });
 
+  it("should parse shell integration when listing sessions", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([{ ...sessionRaw, shellIntegration: false }]);
+
+    const [parsed] = await listSessions();
+
+    expect(parsed?.shellIntegration).toBe(false);
+  });
+
   it("should invoke session commands with camelCase arguments when managing sessions", async () => {
     const password: PasswordInput = { kind: "set", value: "new-pw" };
     vi.mocked(invoke).mockResolvedValue(sessionRaw);
@@ -367,6 +377,7 @@ describe("typed terminal api", () => {
       {},
       [{ ...sessionRaw, id: "1" }],
       [{ ...sessionRaw, passwordSaved: "true" }],
+      [{ ...sessionRaw, shellIntegration: "true" }],
       [{ ...sessionRaw, auth: { kind: "key", path: 7, hasPassphrase: false } }],
     ];
     for (const raw of malformed) {

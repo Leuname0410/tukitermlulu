@@ -143,6 +143,7 @@ mod tests {
             host: host(),
             auth,
             folder,
+            shell_integration: true,
         }
     }
 
@@ -193,6 +194,26 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(result.id, SessionId::new(10));
+    }
+
+    #[test]
+    fn should_keep_disabled_shell_integration_when_creating_session() {
+        let mut repo = MockSessionRepository::new();
+        repo.expect_next_session_id()
+            .once()
+            .returning(|| Box::pin(async { Ok(SessionId::new(10)) }));
+        repo.expect_save_session()
+            .once()
+            .withf(|session| !session.shell_integration)
+            .returning(|_| Box::pin(async { Ok(()) }));
+        let mut secrets = MockSecretStore::new();
+        secrets.expect_set().times(0);
+
+        let mut creation = draft("prod", AuthMethod::Password { remember: false }, None);
+        creation.shell_integration = false;
+        let uc = CreateSession::new(repo, secrets);
+        let created = block_on(uc.execute(creation, None)).unwrap();
+        assert!(!created.shell_integration);
     }
 
     #[test]

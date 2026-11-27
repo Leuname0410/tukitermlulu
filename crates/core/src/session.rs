@@ -244,4 +244,23 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn should_enable_shell_integration_when_creating_session() {
+        assert!(sample_session("prod").shell_integration);
+    }
+
+    #[test]
+    fn should_keep_other_fields_when_changing_shell_integration() {
+        let session = sample_session("prod");
+        let disabled = session.with_shell_integration(false);
+        assert!(!disabled.shell_integration);
+        assert_eq!(
+            disabled,
+            Session {
+                shell_integration: false,
+                ..session.clone()
+            }
+        );
+    }
 }
