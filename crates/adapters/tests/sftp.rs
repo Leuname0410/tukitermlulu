@@ -288,3 +288,23 @@ async fn should_report_operation_when_using_sftp_after_connection_is_closed() {
 
     assert!(matches!(result, Err(FsError::Operation)));
 }
+
+#[tokio::test]
+async fn should_return_tuki_home_when_resolving_home_directory() {
+    let (transport, connected, fs) = authenticated_fs().await;
+
+    let home = fs.home(connected.id).await.unwrap();
+
+    assert_eq!(home.as_str(), "/home/tuki");
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_report_operation_when_resolving_home_after_connection_is_closed() {
+    let (transport, connected, fs) = authenticated_fs().await;
+    assert!(transport.close(connected.id).await.is_ok());
+
+    let result = fs.home(connected.id).await;
+
+    assert!(matches!(result, Err(FsError::Operation)));
+}
