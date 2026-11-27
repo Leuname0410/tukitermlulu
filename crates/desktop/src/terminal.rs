@@ -1,8 +1,12 @@
 //! Puente IPC de la terminal: DTOs, comandos y canal binario de salida.
 
+#[path = "shell_hook.rs"]
+mod shell_hook;
+
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
@@ -10,6 +14,7 @@ use tauri::State;
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tokio::sync::Notify;
 use tuki_adapters::cwd_tracker::Osc7Tracker;
+use tuki_adapters::echo_filter::EchoFilter;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::known_hosts::FileHostKeyVerifier;
 use tuki_adapters::secret_store::KeyringSecretStore;
@@ -33,6 +38,7 @@ use tuki_core::remote_path::RemotePath;
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
+use self::shell_hook::{HookTiming, QuietClock, integrate};
 use crate::transfers::emit_transfers;
 
 /// Estado compartido por los comandos: transporte, known_hosts, passphrases y repositorio.
@@ -145,16 +151,51 @@ pub struct CwdChanged {
 
 /// Entrega la salida del PTY como bytes raw, notifica su cierre y el cwd.
 pub struct ChannelSink {
-    output: Channel<InvokeResponseBody>,
+    output: Arc<Mutex<Channel<InvokeResponseBody>>>,
     closed: Channel<TerminalClosed>,
     tracker: Osc7Tracker,
     last_cwd: Option<RemotePath>,
     cwd: Channel<CwdChanged>,
+    filter: Arc<Mutex<EchoFilter>>,
+    clock: QuietClock,
+}
+
+impl ChannelSink {
+    /// Compone el sink con el filtro y el reloj compartidos con la integración.
+    fn new(
+        output: Arc<Mutex<Channel<InvokeResponseBody>>>,
+        closed: Channel<TerminalClosed>,
+        cwd: Channel<CwdChanged>,
+        filter: Arc<Mutex<EchoFilter>>,
+        clock: QuietClock,
+    ) -> Self {
+        Self {
+            output,
+            closed,
+            tracker: Osc7Tracker::new(),
+            last_cwd: None,
+            cwd,
+            filter,
+            clock,
+        }
+    }
 }
 
 impl PtySink for ChannelSink {
     fn data(&mut self, bytes: &[u8]) {
-        let _ = self.output.send(InvokeResponseBody::Raw(bytes.to_vec()));
+        self.clock.mark(Instant::now());
+        let visible = self
+            .filter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(bytes);
+        if !visible.is_empty() {
+            let _ = self
+                .output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .send(InvokeResponseBody::Raw(visible));
+        }
         if let Some(path) = self
             .tracker
             .feed(bytes)
@@ -353,25 +394,61 @@ pub async fn connect(
         secret_store(),
     );
     let use_case = ConnectTab::new(connect, &state.passphrases);
+    let output = Arc::new(Mutex::new(on_output));
+    let filter = Arc::new(Mutex::new(EchoFilter::new()));
+    let clock = QuietClock::new(Instant::now());
     let request = ConnectRequest {
         session: &session,
         password: password.as_ref(),
         passphrase: passphrase.as_ref(),
         approved_fingerprint: approved_fingerprint.as_ref(),
         pty_size,
-        sink: Box::new(ChannelSink {
-            output: on_output,
-            closed: on_closed,
-            tracker: Osc7Tracker::new(),
-            last_cwd: None,
-            cwd: on_cwd,
-        }),
+        sink: Box::new(ChannelSink::new(
+            Arc::clone(&output),
+            on_closed,
+            on_cwd,
+            Arc::clone(&filter),
+            clock.clone(),
+        )),
     };
     let outcome = use_case
         .execute(TabId::new(tab_id), request)
         .await
         .map_err(CommandError::from_connect)?;
-    Ok(outcome.into())
+    let response = ConnectResponse::from(outcome);
+    let connected_ids = match &response {
+        ConnectResponse::Connected {
+            connection_id,
+            channel_id,
+        } => Some((*connection_id, *channel_id)),
+        _ => None,
+    };
+    if session.shell_integration {
+        if let Some((connection_id, channel_id)) = connected_ids {
+            let transport = Arc::new(state.transport.clone());
+            let task_output = Arc::clone(&output);
+            let task_filter = Arc::clone(&filter);
+            let task_clock = clock.clone();
+            tauri::async_runtime::spawn(async move {
+                let pending = integrate(
+                    transport,
+                    ConnectionId::new(connection_id),
+                    ChannelId::new(channel_id),
+                    task_clock,
+                    task_filter,
+                    HookTiming::default(),
+                )
+                .await;
+                if !pending.is_empty() {
+                    let _ = task_output
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .send(InvokeResponseBody::Raw(pending));
+                }
+            });
+        }
+    }
+    Ok(response)
 }
 
 /// Olvida la passphrase retenida por la pestaña al cerrarla; no desconecta.
@@ -448,7 +525,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tauri::ipc::{Channel, InvokeResponseBody};
-    use tuki_adapters::cwd_tracker::Osc7Tracker;
     use tuki_adapters::session_repository::SqliteSessionRepository;
     use tuki_core::port_errors::{HostKeyError, KeyError, SecretError, TransportError};
     use tuki_core::ports::{ChannelId, ConnectionId, HostKeyFingerprint, PtySize};
@@ -485,13 +561,13 @@ mod tests {
                 Ok(())
             })
         };
-        let sink = ChannelSink {
-            output,
-            closed: Channel::new(move |_body| Ok(())),
-            tracker: Osc7Tracker::new(),
-            last_cwd: None,
+        let sink = ChannelSink::new(
+            Arc::new(Mutex::new(output)),
+            Channel::new(move |_body| Ok(())),
             cwd,
-        };
+            Arc::new(Mutex::new(EchoFilter::new())),
+            QuietClock::new(Instant::now()),
+        );
         (sink, output_bytes, cwd_paths)
     }
 
@@ -539,13 +615,13 @@ mod tests {
                 Ok(())
             })
         };
-        let mut sink = ChannelSink {
-            output,
+        let mut sink = ChannelSink::new(
+            Arc::new(Mutex::new(output)),
             closed,
-            tracker: Osc7Tracker::new(),
-            last_cwd: None,
-            cwd: noop_cwd(),
-        };
+            noop_cwd(),
+            Arc::new(Mutex::new(EchoFilter::new())),
+            QuietClock::new(Instant::now()),
+        );
 
         sink.data(&[1, 2, 3]);
         sink.closed(Some(0));

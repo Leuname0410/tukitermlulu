@@ -1,11 +1,18 @@
 FROM alpine:3.22
 
-RUN apk add --no-cache openssh \
+RUN apk add --no-cache openssh bash zsh fish \
     && adduser -D -s /bin/sh tuki \
-    && echo 'tuki:tuki-test' | chpasswd \
-    && mkdir -p /home/tuki/.ssh \
-    && chown -R tuki:tuki /home/tuki/.ssh \
-    && chmod 700 /home/tuki/.ssh
+    && adduser -D -s /bin/bash tuki-bash \
+    && adduser -D -s /bin/zsh tuki-zsh \
+    && adduser -D -s /usr/bin/fish tuki-fish \
+    && for user in tuki tuki-bash tuki-zsh tuki-fish; do \
+        echo "$user:tuki-test" | chpasswd; \
+        mkdir -p /home/$user/.ssh; \
+        chown -R $user:$user /home/$user/.ssh; \
+        chmod 700 /home/$user/.ssh; \
+    done \
+    && printf 'HISTCONTROL=ignorespace\n' > /home/tuki-bash/.profile \
+    && chown tuki-bash:tuki-bash /home/tuki-bash/.profile
 
 COPY ed25519.pub /home/tuki/.ssh/authorized_keys
 # Solo se copian las claves públicas: las privadas nunca entran en la imagen.
