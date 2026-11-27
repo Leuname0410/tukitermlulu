@@ -143,4 +143,39 @@ mod tests {
         let path = RemotePath::new("/a").expect("ruta válida");
         assert_eq!(path.join("..\\..\\x"), Err(DomainError::InvalidRemotePath));
     }
+
+    #[test]
+    fn should_normalize_terminal_paths_when_creating_from_terminal() {
+        let cases = [
+            ("C:\\Users\\x", "/C:/Users/x"),
+            ("c:/x", "/C:/x"),
+            ("/C:/x", "/C:/x"),
+            ("C:", "/C:/"),
+            ("/var/log", "/var/log"),
+            ("D:\\", "/D:/"),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                RemotePath::from_terminal(raw).map(|path| path.as_str().to_owned()),
+                Ok(expected.to_owned()),
+                "raw: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_reject_empty_when_creating_from_terminal() {
+        assert_eq!(
+            RemotePath::from_terminal(""),
+            Err(DomainError::EmptyRemotePath)
+        );
+    }
+
+    #[test]
+    fn should_keep_parent_references_when_creating_from_terminal() {
+        assert_eq!(
+            RemotePath::from_terminal("C:\\a\\..\\b").map(|path| path.as_str().to_owned()),
+            Ok("/C:/a/../b".to_owned())
+        );
+    }
 }

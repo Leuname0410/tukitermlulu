@@ -299,6 +299,89 @@ describe("SftpSidebar", () => {
   });
 });
 
+describe("SftpSidebar follow terminal", () => {
+  beforeEach(() => {
+    vi.mocked(sftpHome).mockReset().mockResolvedValue("/home/alice");
+    vi.mocked(sftpList).mockReset().mockResolvedValue([entry("docs", true)]);
+    enqueueUpload.mockReset().mockResolvedValue(1);
+    onFileDrop.mockReset().mockResolvedValue(() => {});
+    onTransfers.mockReset().mockResolvedValue(() => {});
+    dpr(1);
+  });
+
+  afterEach(() => {
+    cleanup();
+    dpr(1);
+    vi.restoreAllMocks();
+  });
+
+  function checkbox(): HTMLInputElement {
+    return screen.getByRole("checkbox", { name: "Seguir terminal" }) as HTMLInputElement;
+  }
+
+  it("should list the new follow path when follow terminal is checked", async () => {
+    const { rerender } = render(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    expect(await screen.findByText("docs")).toBeTruthy();
+    expect(sftpList).toHaveBeenLastCalledWith(1, "/var/log");
+    expect(checkbox().checked).toBe(true);
+
+    rerender(<SftpSidebar connectionId={1} followPath="/tmp" />);
+
+    await waitFor(() => expect(sftpList).toHaveBeenLastCalledWith(1, "/tmp"));
+  });
+
+  it("should follow the latest path only after follow terminal is checked again", async () => {
+    const { rerender } = render(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    expect(await screen.findByText("docs")).toBeTruthy();
+
+    fireEvent.click(checkbox());
+    expect(checkbox().checked).toBe(false);
+    rerender(<SftpSidebar connectionId={1} followPath="/tmp" />);
+    await act(async () => {});
+    expect(sftpList).not.toHaveBeenCalledWith(1, "/tmp");
+
+    fireEvent.click(checkbox());
+
+    await waitFor(() => expect(sftpList).toHaveBeenLastCalledWith(1, "/tmp"));
+  });
+
+  it("should not relist when the follow path is unchanged", async () => {
+    const { rerender } = render(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    expect(await screen.findByText("docs")).toBeTruthy();
+    const calls = vi.mocked(sftpList).mock.calls.length;
+
+    await act(async () => {
+      rerender(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    });
+
+    expect(sftpList).toHaveBeenCalledTimes(calls);
+  });
+
+  it("should keep manual navigation from disabling follow terminal", async () => {
+    render(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    expect(await screen.findByText("docs")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Subir de nivel" }));
+
+    await waitFor(() => expect(sftpList).toHaveBeenLastCalledWith(1, "/var"));
+    expect(checkbox().checked).toBe(true);
+  });
+
+  it("should show the error and keep the listing when a followed path fails", async () => {
+    const error: CommandError = { kind: "permission_denied", message: "Sin permiso" };
+    vi.mocked(sftpList).mockImplementation((_id, target) =>
+      target === "/denied" ? Promise.reject(error) : Promise.resolve([entry("docs", true)]),
+    );
+    const { rerender } = render(<SftpSidebar connectionId={1} followPath="/var/log" />);
+    expect(await screen.findByText("docs")).toBeTruthy();
+
+    rerender(<SftpSidebar connectionId={1} followPath="/denied" />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Sin permiso");
+    expect(screen.getByText("docs")).toBeTruthy();
+  });
+});
+
 it("should convert physical pixels to CSS pixels with devicePixelRatio 1 and 2", () => {
   expect(toCssPoint(120, 80, 1)).toEqual({ x: 120, y: 80 });
   expect(toCssPoint(120, 80, 2)).toEqual({ x: 60, y: 40 });

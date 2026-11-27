@@ -288,4 +288,14 @@ mod tests {
     fn should_return_none_when_uri_has_no_path() {
         assert_none(b"\x1b]7;file://host\x07");
     }
+
+    #[test]
+    fn should_normalize_windows_drive_when_uri_has_empty_host() {
+        assert_path(b"\x1b]7;file:///C:/Users/x\x07", "/C:/Users/x");
+    }
+
+    #[test]
+    fn should_normalize_windows_drive_when_uri_has_host() {
+        assert_path(b"\x1b]7;file://host/c:/x\x07", "/C:/x");
+    }
 }
