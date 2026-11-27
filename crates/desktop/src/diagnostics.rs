@@ -46,8 +46,13 @@ fn redact_report(report: &str) -> String {
 
 /// Devuelve el `tukitermlulu*.log` con fecha de modificación más reciente.
 fn latest_log(log_dir: &Path) -> io::Result<Option<PathBuf>> {
+    let entries = match fs::read_dir(log_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
     let mut latest: Option<(SystemTime, PathBuf)> = None;
-    for entry in fs::read_dir(log_dir)? {
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -167,28 +172,32 @@ fn write_unique(dir: &Path, stamp: &str, report: &str) -> io::Result<PathBuf> {
 
 /// Genera el informe en Descargas y devuelve la ruta del archivo creado.
 #[tauri::command]
-pub(crate) fn export_diagnostics(app: AppHandle) -> Res<String> {
-    let log_dir = app
-        .path()
-        .app_log_dir()
-        .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de logs"))?;
-    let report = build_report(
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS,
-        std::env::consts::ARCH,
-        &log_dir,
-        MAX_LOG_LINES,
-    )
-    .map_err(|_| CommandError::new("io", "No se pudo leer el log de la aplicación"))?;
-    let downloads = downloads_dir(app)
-        .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de Descargas"))?;
-    let written = write_unique(
-        Path::new(&downloads),
-        &timestamp(SystemTime::now()),
-        &report,
-    )
-    .map_err(|_| CommandError::new("io", "No se pudo escribir el diagnóstico en Descargas"))?;
-    Ok(written.to_string_lossy().into_owned())
+pub(crate) async fn export_diagnostics(app: AppHandle) -> Res<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let log_dir = app
+            .path()
+            .app_log_dir()
+            .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de logs"))?;
+        let report = build_report(
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            &log_dir,
+            MAX_LOG_LINES,
+        )
+        .map_err(|_| CommandError::new("io", "No se pudo leer el log de la aplicación"))?;
+        let downloads = downloads_dir(app.clone())
+            .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de Descargas"))?;
+        let written = write_unique(
+            Path::new(&downloads),
+            &timestamp(SystemTime::now()),
+            &report,
+        )
+        .map_err(|_| CommandError::new("io", "No se pudo escribir el diagnóstico en Descargas"))?;
+        Ok(written.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| CommandError::new("io", "No se pudo completar la exportación del diagnóstico"))?
 }
 
 #[cfg(test)]
@@ -198,7 +207,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::{build_report, export_diagnostics, timestamp, write_unique, Res};
+    use super::{Res, build_report, export_diagnostics, timestamp, write_unique};
     use tauri::AppHandle;
 
     fn temp_dir(label: &str) -> PathBuf {
