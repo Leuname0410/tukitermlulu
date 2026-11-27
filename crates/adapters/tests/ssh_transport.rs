@@ -1,7 +1,7 @@
 #![cfg(feature = "integration")]
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::keys::HashAlg;
 use russh::server::{Auth, Handler as ServerHandler, run_stream};
@@ -219,6 +219,43 @@ async fn should_return_connect_error_when_no_server_is_listening() {
     host.port = Port::new(1).unwrap();
     let result = RusshTransport::new().connect(&host).await;
     assert!(matches!(result, Err(TransportError::Connect)));
+}
+
+#[tokio::test]
+async fn should_return_connect_error_quickly_when_handshake_exceeds_timeout() {
+    let mut host = test_host();
+    host.hostname = Hostname::new("10.255.255.1").unwrap();
+    let transport = RusshTransport::with_connect_timeout(Duration::from_millis(500));
+    let started = Instant::now();
+    let result = transport.connect(&host).await;
+    assert!(matches!(result, Err(TransportError::Connect)));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "connect tardó {:?} con timeout de 500 ms",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn should_return_connect_error_when_server_never_sends_banner() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (_stream, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let mut host = test_host();
+    host.port = Port::new(port).unwrap();
+    let transport = RusshTransport::with_connect_timeout(Duration::from_millis(200));
+    let started = Instant::now();
+    let result = transport.connect(&host).await;
+    assert!(matches!(result, Err(TransportError::Connect)));
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "connect tardó {:?} con timeout de 200 ms",
+        started.elapsed()
+    );
+    server.abort();
 }
 
 /// Servidor de prueba que completa el handshake pero no responde al password hasta que se libera.
