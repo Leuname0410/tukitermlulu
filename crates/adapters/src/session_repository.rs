@@ -1,4 +1,319 @@
-//! Pruebas del repositorio SQLite antes de la implementación (fase roja de TDD).
+//! Repositorio SQLite de sesiones y carpetas, con migraciones versionadas.
+//!
+//! La conexión se protege con un `std::sync::Mutex` que solo se bloquea dentro de `spawn_blocking`.
+
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+
+use rusqlite::{ErrorCode, Params, Row, Statement, params};
+use tuki_core::auth::{AuthMethod, KeyRef};
+use tuki_core::host::{Host, Hostname, Port, Username};
+use tuki_core::port_errors::RepositoryError;
+use tuki_core::ports::SessionRepository;
+use tuki_core::session::{Folder, FolderId, Session, SessionId};
+
+/// Esquema versionado: el índice del array es `PRAGMA user_version`.
+const MIGRATIONS: &[&str] = &["CREATE TABLE folders (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        parent INTEGER NULL REFERENCES folders(id) ON DELETE CASCADE
+     );
+     CREATE TABLE sessions (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+        username TEXT NOT NULL,
+        auth_kind TEXT NOT NULL CHECK(auth_kind IN ('password','key')),
+        remember_password INTEGER NOT NULL DEFAULT 0,
+        key_path TEXT NULL,
+        key_has_passphrase INTEGER NOT NULL DEFAULT 0,
+        folder INTEGER NULL REFERENCES folders(id) ON DELETE SET NULL
+     );"];
+
+/// Columnas de una sesión, en el orden esperado por `session_from_row`.
+const SESSION_COLUMNS: &str = "id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder";
+
+/// Inserción o actualización de una sesión; nunca incluye secretos.
+const UPSERT_SESSION: &str = "INSERT INTO sessions (id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name, hostname=excluded.hostname, port=excluded.port, username=excluded.username, auth_kind=excluded.auth_kind, remember_password=excluded.remember_password, key_path=excluded.key_path, key_has_passphrase=excluded.key_has_passphrase, folder=excluded.folder";
+
+/// Inserción o actualización de una carpeta.
+const UPSERT_FOLDER: &str = "INSERT INTO folders (id, name, parent) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent=excluded.parent";
+
+/// Repositorio de sesiones y carpetas sobre una conexión SQLite compartida.
+pub struct SqliteSessionRepository {
+    conn: Arc<Mutex<rusqlite::Connection>>,
+}
+
+impl SqliteSessionRepository {
+    /// Abre (o crea) el archivo y aplica las migraciones pendientes.
+    pub fn open(path: &Path) -> Result<Self, RepositoryError> {
+        let mut conn = rusqlite::Connection::open(path).map_err(map_db)?;
+        initialize(&mut conn)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    /// Crea un repositorio en memoria, útil para pruebas.
+    pub fn in_memory() -> Result<Self, RepositoryError> {
+        let mut conn = rusqlite::Connection::open_in_memory().map_err(map_db)?;
+        initialize(&mut conn)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    /// Ejecuta una operación sincrónica en un hilo bloqueante.
+    async fn run<T, F>(&self, operation: F) -> Result<T, RepositoryError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&rusqlite::Connection) -> Result<T, RepositoryError> + Send + 'static,
+    {
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let guard = conn.lock().map_err(|_| RepositoryError::Io)?;
+            operation(&guard)
+        })
+        .await
+        .map_err(|_| RepositoryError::Io)?
+    }
+}
+
+impl SessionRepository for SqliteSessionRepository {
+    async fn next_session_id(&self) -> Result<SessionId, RepositoryError> {
+        self.run(|conn| next_id(conn, "sessions").map(SessionId::new))
+            .await
+    }
+
+    async fn next_folder_id(&self) -> Result<FolderId, RepositoryError> {
+        self.run(|conn| next_id(conn, "folders").map(FolderId::new))
+            .await
+    }
+
+    async fn list_sessions(&self) -> Result<Vec<Session>, RepositoryError> {
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions ORDER BY id");
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(&sql).map_err(map_db)?;
+            fetch(&mut stmt, [], session_from_row)
+        })
+        .await
+    }
+
+    async fn get_session(&self, id: SessionId) -> Result<Option<Session>, RepositoryError> {
+        let db_id = id_to_db(id.get())?;
+        let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions WHERE id = ?1");
+        self.run(move |conn| {
+            let mut stmt = conn.prepare(&sql).map_err(map_db)?;
+            Ok(fetch(&mut stmt, params![db_id], session_from_row)?
+                .into_iter()
+                .next())
+        })
+        .await
+    }
+
+    async fn save_session(&self, session: &Session) -> Result<(), RepositoryError> {
+        let session = session.clone();
+        self.run(move |conn| {
+            let (auth_kind, remember, key_path, has_passphrase) = match &session.auth {
+                AuthMethod::Password { remember } => ("password", i64::from(*remember), None, 0),
+                AuthMethod::PublicKey {
+                    key,
+                    has_passphrase,
+                } => ("key", 0, Some(key.path()), i64::from(*has_passphrase)),
+            };
+            let folder = session.folder.map(|id| id_to_db(id.get())).transpose()?;
+            conn.execute(
+                UPSERT_SESSION,
+                params![
+                    id_to_db(session.id.get())?,
+                    session.name,
+                    session.host.hostname.as_str(),
+                    i64::from(session.host.port.get()),
+                    session.host.username.as_str(),
+                    auth_kind,
+                    remember,
+                    key_path,
+                    has_passphrase,
+                    folder,
+                ],
+            )
+            .map_err(map_db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_session(&self, id: SessionId) -> Result<(), RepositoryError> {
+        let db_id = id_to_db(id.get())?;
+        self.run(move |conn| {
+            let changed = conn
+                .execute("DELETE FROM sessions WHERE id = ?1", params![db_id])
+                .map_err(map_db)?;
+            if changed == 0 {
+                Err(RepositoryError::NotFound)
+            } else {
+                Ok(())
+            }
+        })
+        .await
+    }
+
+    async fn list_folders(&self) -> Result<Vec<Folder>, RepositoryError> {
+        self.run(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, name, parent FROM folders ORDER BY id")
+                .map_err(map_db)?;
+            fetch(&mut stmt, [], folder_from_row)
+        })
+        .await
+    }
+
+    async fn save_folder(&self, folder: &Folder) -> Result<(), RepositoryError> {
+        let folder = folder.clone();
+        self.run(move |conn| {
+            let parent = folder.parent.map(|id| id_to_db(id.get())).transpose()?;
+            conn.execute(
+                UPSERT_FOLDER,
+                params![id_to_db(folder.id.get())?, folder.name, parent],
+            )
+            .map_err(map_db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn delete_folder(&self, id: FolderId) -> Result<(), RepositoryError> {
+        let db_id = id_to_db(id.get())?;
+        self.run(move |conn| {
+            let changed = conn
+                .execute("DELETE FROM folders WHERE id = ?1", params![db_id])
+                .map_err(map_db)?;
+            if changed == 0 {
+                Err(RepositoryError::NotFound)
+            } else {
+                Ok(())
+            }
+        })
+        .await
+    }
+}
+
+/// Activa las claves foráneas y deja el esquema al día.
+fn initialize(conn: &mut rusqlite::Connection) -> Result<(), RepositoryError> {
+    conn.execute_batch("PRAGMA foreign_keys = ON")
+        .map_err(map_db)?;
+    migrate(conn)
+}
+
+/// Aplica las migraciones pendientes en una sola transacción.
+fn migrate(conn: &mut rusqlite::Connection) -> Result<(), RepositoryError> {
+    let current: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(map_db)?;
+    let current = usize::try_from(current).map_err(|_| RepositoryError::Io)?;
+    if current > MIGRATIONS.len() {
+        return Err(RepositoryError::Io);
+    }
+    let tx = conn.transaction().map_err(map_db)?;
+    for sql in &MIGRATIONS[current..] {
+        tx.execute_batch(sql).map_err(map_db)?;
+    }
+    let version = u32::try_from(MIGRATIONS.len()).map_err(|_| RepositoryError::Io)?;
+    tx.pragma_update(None, "user_version", version)
+        .map_err(map_db)?;
+    tx.commit().map_err(map_db)
+}
+
+/// Traduce errores de SQLite sin exponer SQL ni valores.
+fn map_db(error: rusqlite::Error) -> RepositoryError {
+    match error.sqlite_error_code() {
+        Some(ErrorCode::ConstraintViolation) => RepositoryError::Conflict,
+        _ => RepositoryError::Io,
+    }
+}
+
+fn id_to_db(value: u64) -> Result<i64, RepositoryError> {
+    i64::try_from(value).map_err(|_| RepositoryError::Io)
+}
+
+fn id_from_db(value: i64) -> Result<u64, RepositoryError> {
+    u64::try_from(value).map_err(|_| RepositoryError::Io)
+}
+
+fn as_bool(value: i64) -> bool {
+    value != 0
+}
+
+/// Devuelve `MAX(id) + 1`, o 1 si la tabla está vacía.
+fn next_id(conn: &rusqlite::Connection, table: &str) -> Result<u64, RepositoryError> {
+    let sql = format!("SELECT COALESCE(MAX(id), 0) + 1 FROM {table}");
+    let value: i64 = conn.query_row(&sql, [], |row| row.get(0)).map_err(map_db)?;
+    id_from_db(value)
+}
+
+/// Recolecta y valida todas las filas devueltas por una sentencia.
+fn fetch<T>(
+    stmt: &mut Statement<'_>,
+    params: impl Params,
+    parse: fn(&Row<'_>) -> Result<T, RepositoryError>,
+) -> Result<Vec<T>, RepositoryError> {
+    let mut rows = stmt.query(params).map_err(map_db)?;
+    let mut values = Vec::new();
+    while let Some(row) = rows.next().map_err(map_db)? {
+        values.push(parse(row)?);
+    }
+    Ok(values)
+}
+
+/// Reconstruye una carpeta con los constructores del dominio.
+fn folder_from_row(row: &Row<'_>) -> Result<Folder, RepositoryError> {
+    let id = FolderId::new(id_from_db(row.get(0).map_err(map_db)?)?);
+    let name: String = row.get(1).map_err(map_db)?;
+    let parent: Option<i64> = row.get(2).map_err(map_db)?;
+    let parent = parent
+        .map(|value| id_from_db(value).map(FolderId::new))
+        .transpose()?;
+    Folder::new(id, &name, parent).map_err(|_| RepositoryError::Io)
+}
+
+/// Reconstruye una sesión; cualquier fila inválida se reporta como `Io`.
+fn session_from_row(row: &Row<'_>) -> Result<Session, RepositoryError> {
+    let id = SessionId::new(id_from_db(row.get(0).map_err(map_db)?)?);
+    let name: String = row.get(1).map_err(map_db)?;
+    let hostname = Hostname::new(&row.get::<_, String>(2).map_err(map_db)?)
+        .map_err(|_| RepositoryError::Io)?;
+    let port =
+        u16::try_from(row.get::<_, i64>(3).map_err(map_db)?).map_err(|_| RepositoryError::Io)?;
+    let port = Port::new(port).map_err(|_| RepositoryError::Io)?;
+    let username = Username::new(&row.get::<_, String>(4).map_err(map_db)?)
+        .map_err(|_| RepositoryError::Io)?;
+    let kind: String = row.get(5).map_err(map_db)?;
+    let remember: i64 = row.get(6).map_err(map_db)?;
+    let key_path: Option<String> = row.get(7).map_err(map_db)?;
+    let has_passphrase: i64 = row.get(8).map_err(map_db)?;
+    let folder: Option<i64> = row.get(9).map_err(map_db)?;
+    let auth = match kind.as_str() {
+        "password" => AuthMethod::Password {
+            remember: as_bool(remember),
+        },
+        "key" => AuthMethod::PublicKey {
+            key: KeyRef::new(key_path.as_deref().ok_or(RepositoryError::Io)?)
+                .map_err(|_| RepositoryError::Io)?,
+            has_passphrase: as_bool(has_passphrase),
+        },
+        _ => return Err(RepositoryError::Io),
+    };
+    let folder = folder
+        .map(|value| id_from_db(value).map(FolderId::new))
+        .transpose()?;
+    let host = Host {
+        hostname,
+        port,
+        username,
+    };
+    Session::new(id, &name, host, auth, folder).map_err(|_| RepositoryError::Io)
+}
 
 #[cfg(test)]
 mod tests {
@@ -207,8 +522,7 @@ mod tests {
             Err(RepositoryError::Conflict)
         );
         assert_eq!(
-            repo.save_folder(&folder(1, Some(FolderId::new(99))))
-                .await,
+            repo.save_folder(&folder(1, Some(FolderId::new(99)))).await,
             Err(RepositoryError::Conflict)
         );
     }
@@ -256,8 +570,12 @@ mod tests {
     async fn should_have_no_secret_columns_when_inspecting_schema() {
         let repo = SqliteSessionRepository::in_memory().expect("repositorio");
         let conn = repo.conn.lock().expect("cerrojo");
-        let mut stmt = conn.prepare("PRAGMA table_info(sessions)").expect("esquema");
-        let rows = stmt.query_map([], |row| row.get::<_, String>(1)).expect("columnas");
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(sessions)")
+            .expect("esquema");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columnas");
         for name in rows {
             let name = name.expect("columna");
             assert!(!matches!(name.as_str(), "password" | "passphrase"));
