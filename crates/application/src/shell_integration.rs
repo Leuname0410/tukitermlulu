@@ -16,8 +16,12 @@ pub enum ShellKind {
 /// Sonda ejecutada por un canal `exec` aparte, sin tocar el PTY del usuario.
 pub const PROBE_COMMAND: &str = "echo %COMSPEC%::$PSVersionTable::$0::$SHELL";
 
-/// Marcador único que delimita el final de la inyección silenciosa.
+/// Marcador único que delimita el final de la inyección silenciosa (BEL).
 pub const READY_MARKER: &[u8] = b"\x1b]777;tuki-ready\x07";
+
+/// Marcador alternativo terminado en ST (`ESC \`), emitido por el `prompt` de `cmd.exe`.
+/// El filtro de eco debe aceptar ambos: `READY_MARKER` y `READY_MARKER_ST`.
+pub const READY_MARKER_ST: &[u8] = b"\x1b]777;tuki-ready\x1b\\";
 
 /// Clasifica la shell a partir de stdout y stderr de la sonda.
 pub fn classify(output: &ExecOutput) -> ShellKind {
@@ -54,32 +58,32 @@ pub fn classify(output: &ExecOutput) -> ShellKind {
 }
 
 /// Construye la línea de integración para la shell dada; `Unknown` no se inyecta.
+/// El marcador se emite antes de limpiar la línea para que el filtro de eco no se trague la limpieza.
 pub fn integration_line(shell: ShellKind) -> Option<String> {
     let line = match shell {
         ShellKind::Bash => concat!(
             r#" __tuki_osc7() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-}" "$PWD"; }"#,
             r#"; export PROMPT_COMMAND="__tuki_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#,
-            r#"; __tuki_osc7; history -d $((HISTCMD-1)) 2>/dev/null; printf '\r\033[K'; printf '\033]777;tuki-ready\007'"#,
+            r#"; __tuki_osc7; history -d $((HISTCMD-1)) 2>/dev/null; printf '\033]777;tuki-ready\007\r\033[K'"#,
             "\r",
         ),
         ShellKind::Zsh => concat!(
             r#" setopt HIST_IGNORE_SPACE; __tuki_osc7() { printf '\033]7;file://%s%s\007' "${HOST:-}" "$PWD"; }"#,
-            r#"; precmd_functions+=(__tuki_osc7); __tuki_osc7; printf '\r\033[K'; printf '\033]777;tuki-ready\007'"#,
+            r#"; precmd_functions+=(__tuki_osc7); __tuki_osc7; printf '\033]777;tuki-ready\007\r\033[K'"#,
             "\r",
         ),
         ShellKind::Fish => concat!(
             r#" function __tuki_osc7 --on-variable PWD; printf '\e]7;file://%s%s\a' (hostname) $PWD; end"#,
-            r#"; __tuki_osc7; printf '\r\e[K'; printf '\e]777;tuki-ready\a'"#,
+            r#"; __tuki_osc7; printf '\e]777;tuki-ready\a\r\e[K'"#,
             "\r",
         ),
         ShellKind::PowerShell => concat!(
-            r#" Write-Host -NoNewline "`e]7;file:///$($PWD.Path.Replace('\','/'))`a"; $tukiOriginalPrompt = $function:prompt; function global:prompt { Write-Host -NoNewline "`e]7;file:///$($PWD.Path.Replace('\','/'))`a"; & $tukiOriginalPrompt }"#,
-            r#"; Clear-History -Count 1 -Newest; Write-Host -NoNewline "`r`e[K`e]777;tuki-ready`a""#,
+            r#" Write-Host -NoNewline "$([char]27)]7;file:///$($PWD.Path.Replace('\','/'))$([char]7)"; $tukiOriginalPrompt = $function:prompt; function global:prompt { Write-Host -NoNewline "$([char]27)]7;file:///$($PWD.Path.Replace('\','/'))$([char]7)"; & $tukiOriginalPrompt }"#,
+            r#"; Clear-History -Count 1 -Newest; Write-Host -NoNewline "$([char]27)]777;tuki-ready$([char]7)$([char]13)$([char]27)[K""#,
             "\r",
         ),
         ShellKind::Cmd => concat!(
-            r#"echo $E]7;file:///$P$E&prompt $E]7;file:///$P$E\$P$G&echo $E[K&echo $E]777;tuki-ready"#,
-            "\u{7}",
+            r#"prompt $E]7;file:///$P$E\$E]777;tuki-ready$E\$E[2K$E[G$P$G"#,
             "\r",
         ),
         ShellKind::Unknown => return None,
@@ -233,8 +237,14 @@ mod tests {
     #[test]
     fn should_use_char_casts_when_building_powershell_escapes() {
         let line = integration_line(ShellKind::PowerShell).unwrap();
-        assert!(!line.contains("`e"), "Windows PowerShell 5.1 no entiende `e");
-        assert!(!line.contains("`a"), "Windows PowerShell 5.1 no entiende `a");
+        assert!(
+            !line.contains("`e"),
+            "Windows PowerShell 5.1 no entiende `e"
+        );
+        assert!(
+            !line.contains("`a"),
+            "Windows PowerShell 5.1 no entiende `a"
+        );
         assert!(line.contains("$([char]27)"));
         assert!(line.contains("$([char]7)"));
     }
