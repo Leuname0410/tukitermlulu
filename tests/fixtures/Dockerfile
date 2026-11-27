@@ -12,7 +12,10 @@ RUN apk add --no-cache openssh bash zsh fish \
         chmod 700 /home/$user/.ssh; \
     done \
     && printf 'HISTCONTROL=ignorespace\n' > /home/tuki-bash/.profile \
-    && chown tuki-bash:tuki-bash /home/tuki-bash/.profile
+    && chown tuki-bash:tuki-bash /home/tuki-bash/.profile \
+    && mkdir -p /home/tuki-fish/.config/fish \
+    && printf '%s\n' 'if not status is-interactive' '    echo "fish: \$0 is not valid in this context" >&2' 'end' > /home/tuki-fish/.config/fish/config.fish \
+    && chown -R tuki-fish:tuki-fish /home/tuki-fish/.config
 
 COPY ed25519.pub /home/tuki/.ssh/authorized_keys
 # Solo se copian las claves públicas: las privadas nunca entran en la imagen.

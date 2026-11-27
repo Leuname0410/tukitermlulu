@@ -8,9 +8,7 @@ const MAX_BUFFER: usize = 256 * 1024;
 /// Filtro puro: fuera de la ventana pasa bytes; dentro retiene hasta el marcador.
 #[derive(Default)]
 pub struct EchoFilter {
-    #[allow(dead_code)]
     active: bool,
-    #[allow(dead_code)]
     buffer: Vec<u8>,
 }
 
@@ -23,20 +21,54 @@ impl EchoFilter {
     /// Empieza a retener salida hasta ver uno de los marcadores de `tuki-ready`.
     pub fn activate(&mut self) {
         self.active = true;
+        self.buffer.clear();
     }
 
     /// Devuelve los bytes visibles de un fragmento; oculta el resto.
-    #[allow(dead_code)]
     pub fn push(&mut self, bytes: &[u8]) -> Vec<u8> {
-        bytes.to_vec()
+        if !self.active {
+            return bytes.to_vec();
+        }
+        if self.buffer.len().saturating_add(bytes.len()) > MAX_BUFFER {
+            // Sin marcador y sin hueco: soltamos todo y dejamos de filtrar.
+            let mut pending = std::mem::take(&mut self.buffer);
+            pending.extend_from_slice(bytes);
+            self.active = false;
+            return pending;
+        }
+        self.buffer.extend_from_slice(bytes);
+        let Some(end) = self.marker_end() else {
+            return Vec::new();
+        };
+        self.active = false;
+        let visible = self.buffer.split_off(end);
+        self.buffer.clear();
+        visible
     }
 
     /// Reenvía lo retenido si no apareció el marcador antes del timeout.
-    #[allow(dead_code)]
     pub fn expire(&mut self) -> Vec<u8> {
         self.active = false;
-        Vec::new()
+        std::mem::take(&mut self.buffer)
     }
+
+    /// Posición justo después del primero de los dos marcadores completos.
+    fn marker_end(&self) -> Option<usize> {
+        [READY_MARKER, READY_MARKER_ST]
+            .iter()
+            .filter_map(|marker| find_subslice(&self.buffer, marker).map(|at| at + marker.len()))
+            .min()
+    }
+}
+
+/// Busca un marcador que puede llegar partido entre varios fragmentos.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if haystack.len() < needle.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 #[cfg(test)]

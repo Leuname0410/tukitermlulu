@@ -4,13 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tuki_adapters::echo_filter::EchoFilter;
-use tuki_application::shell_integration::{PROBE_COMMAND, ShellKind, classify, integration_line};
+use tuki_application::shell_integration::{PROBE_COMMAND, classify, integration_line};
 use tuki_core::ports::{ChannelId, ConnectionId, SshTransport};
 
 /// Instante en que la salida del PTY estuvo por última vez; compartido con el sink.
 #[derive(Clone)]
 pub(crate) struct QuietClock {
-    #[allow(dead_code)]
     last: Arc<Mutex<Instant>>,
 }
 
@@ -24,13 +23,20 @@ impl QuietClock {
 
     /// Registra salida nueva.
     pub(crate) fn mark(&self, now: Instant) {
-        let _ = now;
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *last = now;
     }
 
     /// Comprueba si han pasado `threshold` sin salida desde el último `mark`.
     pub(crate) fn is_quiet(&self, now: Instant, threshold: Duration) -> bool {
-        let _ = (now, threshold);
-        false
+        let last = self
+            .last
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        now.saturating_duration_since(*last) >= threshold
     }
 
     /// Comprueba si se agotó el tiempo máximo de espera.
@@ -42,11 +48,8 @@ impl QuietClock {
 /// Tiempos de la secuencia; los tests los acortan para no esperar.
 #[derive(Clone, Copy)]
 pub(crate) struct HookTiming {
-    #[allow(dead_code)]
     pub(crate) quiet: Duration,
-    #[allow(dead_code)]
     pub(crate) max_wait: Duration,
-    #[allow(dead_code)]
     pub(crate) expire: Duration,
 }
 
@@ -61,7 +64,7 @@ impl Default for HookTiming {
 }
 
 /// Sonda, silencio, ocultación y escritura; devuelve la salida sin marcador.
-#[allow(dead_code)]
+/// Los fallos SSH se ignoran: la terminal sigue funcionando sin seguimiento.
 pub(crate) async fn integrate<T: SshTransport>(
     transport: Arc<T>,
     connection: ConnectionId,
@@ -70,8 +73,31 @@ pub(crate) async fn integrate<T: SshTransport>(
     filter: Arc<Mutex<EchoFilter>>,
     timing: HookTiming,
 ) -> Vec<u8> {
-    let _ = (transport, connection, channel, clock, filter, timing);
-    Vec::new()
+    let Ok(output) = transport.exec(connection, PROBE_COMMAND).await else {
+        return Vec::new();
+    };
+    let Some(line) = integration_line(classify(&output)) else {
+        return Vec::new();
+    };
+    let started = Instant::now();
+    loop {
+        let now = Instant::now();
+        if clock.is_quiet(now, timing.quiet) || QuietClock::timed_out(now, started, timing.max_wait)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    filter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .activate();
+    let _ = transport.write(channel, line.as_bytes()).await;
+    tokio::time::sleep(timing.expire).await;
+    filter
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .expire()
 }
 
 #[cfg(test)]
@@ -103,14 +129,4 @@ mod tests {
         ));
         assert!(QuietClock::timed_out(start + max, start, max));
     }
-}
-
-#[allow(dead_code)]
-fn _probe_references() -> (&'static str, fn(&tuki_core::ports::ExecOutput) -> ShellKind) {
-    (PROBE_COMMAND, classify)
-}
-
-#[allow(dead_code)]
-fn _line_reference(shell: ShellKind) -> Option<String> {
-    integration_line(shell)
 }

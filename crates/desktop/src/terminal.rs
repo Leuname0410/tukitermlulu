@@ -423,30 +423,30 @@ pub async fn connect(
         } => Some((*connection_id, *channel_id)),
         _ => None,
     };
-    if session.shell_integration {
-        if let Some((connection_id, channel_id)) = connected_ids {
-            let transport = Arc::new(state.transport.clone());
-            let task_output = Arc::clone(&output);
-            let task_filter = Arc::clone(&filter);
-            let task_clock = clock.clone();
-            tauri::async_runtime::spawn(async move {
-                let pending = integrate(
-                    transport,
-                    ConnectionId::new(connection_id),
-                    ChannelId::new(channel_id),
-                    task_clock,
-                    task_filter,
-                    HookTiming::default(),
-                )
-                .await;
-                if !pending.is_empty() {
-                    let _ = task_output
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .send(InvokeResponseBody::Raw(pending));
-                }
-            });
-        }
+    if session.shell_integration
+        && let Some((connection_id, channel_id)) = connected_ids
+    {
+        let transport = Arc::new(state.transport.clone());
+        let task_output = Arc::clone(&output);
+        let task_filter = Arc::clone(&filter);
+        let task_clock = clock.clone();
+        tauri::async_runtime::spawn(async move {
+            let pending = integrate(
+                transport,
+                ConnectionId::new(connection_id),
+                ChannelId::new(channel_id),
+                task_clock,
+                task_filter,
+                HookTiming::default(),
+            )
+            .await;
+            if !pending.is_empty() {
+                let _ = task_output
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .send(InvokeResponseBody::Raw(pending));
+            }
+        });
     }
     Ok(response)
 }
