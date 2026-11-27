@@ -63,6 +63,12 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-28d | APPROVE | 2 | 6 | rama `feat/T-28d-shell-inject` desde T-28c. Inyección + `EchoFilter`; `bash`/`zsh`/`fish` en el contenedor. R1 MAJOR: salida desordenada al expirar. MINOR: la tarea espera los 2 s aunque llegue el marcador |
 | T-30 | APPROVE | 1 | 5 | rama `feat/T-30-follow-terminal` desde T-28d. "Seguir terminal" + `RemotePath::from_terminal` |
 
+| T-34a | APPROVE | 1 | 7 | rama `feat/T-34a-tracing-logs` desde T-30. `tracing` + rotación diaria (7) + `RedactingFields`. MINOR: diff ~650 líneas; formato `message=` |
+| T-34b | APPROVE | 2 | 7 | rama `feat/T-34b-diagnostics` desde T-34a. Exportar diagnóstico a Descargas. R1: 2 MAJOR (I/O en el hilo principal, sin carpeta de logs) |
+| T-33a | APPROVE | 1 | 3 | rama `feat/T-33a-bundle` desde T-34b. Bundle de 6 targets; Windows local: NSIS 4.49 MB, MSI 6.44 MB (KPI < 15 MB ✔) |
+
+## F7: en curso. Bloqueada en D1–D4 (`docs/F7-plan.md`)
+
 ## F6: cerrada (2026-11-27)
 T-27 → T-28a → T-28b → T-28c → T-28d → T-30 (T-29 descartado por ADR-006). `feat/T-30-follow-terminal` contiene F0–F6 (sin merge a `main`). ADR-006 sigue **Propuesto**.
 Pendiente humano: `just dev` con `tuki-bash`/`tuki-zsh`/`tuki-fish` (`cd /var/log` → el sidebar sigue, sin eco visible; desmarcar → no sigue); PowerShell 5.1 y cmd.exe contra un Windows con OpenSSH.
