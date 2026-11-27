@@ -34,6 +34,13 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-15a | APPROVE | 2 | 4 (+lock) | rama `feat/T-15a-tauri-terminal-bridge` desde T-14. R1 MAJOR: timeout externo dejaba conexiones huérfanas → movido al handshake del adaptador (20 s) |
 | T-15b | APPROVE | 1 | 4 (+lock) | rama `feat/T-15b-ui-terminal-api` desde T-15a. MINOR: `fingerprint` tipado `string` pero llega `null`; salida no-ArrayBuffer se descarta en silencio |
 | T-16 | APPROVE | 2 | 5 (+lock) | rama `feat/T-16-terminal-view` desde T-15b. R1 MAJOR: doble pegado sin `preventDefault`. Pendiente manual: vim/htop/sudo (tras T-17) |
+| T-17a | APPROVE | 1 | 4 | rama `feat/T-17a-tab-passphrase` desde T-16. Passphrase en memoria del backend por pestaña (`TabPassphrases`); se borra con `WrongPassphrase`/`NeedsPassphrase`/`close_tab`. MINOR: `#[rustfmt::skip]` |
+| T-17b | APPROVE | 1 | 5 | rama `feat/T-17b-tab-controller` desde T-17a. Reducer + `TabController` con buffer de 1 MiB previo al `attach`. Diff 523 líneas (272 tests) |
+| T-17c | APPROVE | 2 | 6 (+4 del fix) | rama `feat/T-17c-tabs-ui` desde T-17b. R1 MAJOR: el PTY nunca recibía el tamaño real tras el fit inicial (raíz en `useTerminal.ts`, T-16). Prompts inline provisionales hasta T-20. MINOR: al terminar la sesión se desmonta la terminal y se pierde la salida |
+
+## F3: cerrada (2026-11-26)
+T-13a → T-13b → T-13c → T-14 → T-15a → T-15b → T-16 → T-17a → T-17b → T-17c. `feat/T-17c-tabs-ui` contiene F0–F3.
+Pendiente humano: prueba manual con `just dev` contra `127.0.0.1:2222` (contraseña y llave con passphrase; vim, htop, pegar en `sudo`; `exit` + Reconectar sin pedir passphrase; cerrar y reabrir la pide).
 
 ## F2: cerrada (2026-11-26)
 T-09 → T-10 → T-11 → T-12a → T-12b. `feat/T-12b-key-file-store` contiene F0 + F1 + F2.
