@@ -98,6 +98,7 @@ export interface EntryDto {
   path: string;
   isDir: boolean;
   size: number;
+  permissions?: number;
 }
 
 /** Evento de arrastre del SO, con coordenadas físicas relativas al webview. */
@@ -148,6 +149,13 @@ function readBoolean(value: unknown, field: string): boolean {
 function readOptionalNumber(value: unknown, field: string): number | null {
   if (value === null || value === undefined) {
     return null;
+  }
+  return readNumber(value, field);
+}
+
+function readOptionalNumberField(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
   }
   return readNumber(value, field);
 }
@@ -294,6 +302,7 @@ function parseEntry(value: unknown): EntryDto {
     path: readString(entry.path, "path"),
     isDir: readBoolean(entry.isDir, "isDir"),
     size: readNumber(entry.size, "size"),
+    permissions: readOptionalNumberField(entry.permissions, "permissions"),
   };
 }
 
@@ -463,6 +472,16 @@ export async function sftpRename(connectionId: number, from: string, to: string)
 /** Elimina una entrada remota. */
 export async function sftpRemove(connectionId: number, path: string): Promise<void> {
   await invoke("sftp_remove", { connectionId, path });
+}
+
+/** Cambia los permisos Unix de una entrada remota. */
+export async function sftpChmod(connectionId: number, path: string, mode: number): Promise<void> {
+  await invoke("sftp_chmod", { connectionId, path, mode });
+}
+
+/** Devuelve la carpeta de Descargas del sistema para guardar sin diálogo nativo. */
+export async function downloadsDir(): Promise<string> {
+  return readString(await invoke<unknown>("downloads_dir"), "downloadsDir");
 }
 
 /** Suscribe la UI a los cambios de la cola, descartando cargas mal formadas. */

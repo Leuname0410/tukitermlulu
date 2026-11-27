@@ -1,7 +1,7 @@
 //! Puente IPC para la navegación SFTP sobre la conexión de la pestaña.
 
 use serde::Serialize;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 use tuki_core::port_errors::FsError;
 use tuki_core::ports::{ConnectionId, FileEntry, RemoteFileSystem};
 use tuki_core::remote_path::RemotePath;
@@ -18,6 +18,9 @@ pub struct EntryDto {
     path: String,
     is_dir: bool,
     size: u64,
+    /// Bits de permiso Unix (`0o7777`), si el servidor los reporta.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permissions: Option<u32>,
 }
 
 /// Traduce los fallos del sistema de archivos a categorías de error IPC.
@@ -42,6 +45,7 @@ fn to_dto(entry: &FileEntry) -> EntryDto {
         path: entry.path.as_str().to_owned(),
         is_dir: entry.is_dir,
         size: entry.size,
+        permissions: entry.permissions,
     }
 }
 
@@ -83,6 +87,15 @@ async fn remove<F: RemoteFileSystem>(fs: &F, id: ConnectionId, path: &str) -> Re
     fs.remove(id, &path).await.map_err(from_fs_error)
 }
 
+/// Cambia los permisos de una entrada remota, validando el rango del modo.
+async fn chmod<F: RemoteFileSystem>(fs: &F, id: ConnectionId, path: &str, mode: u32) -> Res<()> {
+    if mode > 0o7777 {
+        return Err(CommandError::invalid_input("file mode exceeds 0o7777"));
+    }
+    let path = RemotePath::new(path).map_err(CommandError::invalid_input)?;
+    fs.chmod(id, &path, mode).await.map_err(from_fs_error)
+}
+
 /// Directorio inicial de SFTP de la pestaña indicada.
 #[tauri::command]
 pub async fn sftp_home(state: State<'_, AppState>, connection_id: u64) -> Res<String> {
@@ -120,6 +133,26 @@ pub async fn sftp_rename(
 #[tauri::command]
 pub async fn sftp_remove(state: State<'_, AppState>, connection_id: u64, path: String) -> Res<()> {
     remove(&state.fs, ConnectionId::new(connection_id), &path).await
+}
+
+/// Cambia los permisos de una entrada en la conexión indicada.
+#[tauri::command]
+pub async fn sftp_chmod(
+    state: State<'_, AppState>,
+    connection_id: u64,
+    path: String,
+    mode: u32,
+) -> Res<()> {
+    chmod(&state.fs, ConnectionId::new(connection_id), &path, mode).await
+}
+
+/// Devuelve la carpeta de Descargas del sistema para guardar sin diálogo nativo.
+#[tauri::command]
+pub fn downloads_dir(app: AppHandle) -> Res<String> {
+    app.path()
+        .download_dir()
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(|error| CommandError::new("io", error))
 }
 
 #[cfg(test)]
@@ -193,10 +226,7 @@ mod tests {
             kind(block_on(chmod(&fs, id, "/srv/a", 0o7777 + 1))),
             "invalid_input"
         );
-        assert_eq!(
-            kind(block_on(chmod(&fs, id, "", 0o640))),
-            "invalid_input"
-        );
+        assert_eq!(kind(block_on(chmod(&fs, id, "", 0o640))), "invalid_input");
     }
 
     #[test]

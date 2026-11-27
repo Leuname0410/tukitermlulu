@@ -8,7 +8,7 @@ use std::sync::Arc;
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpClientError;
 use russh_sftp::client::fs::File;
-use russh_sftp::protocol::{OpenFlags, StatusCode};
+use russh_sftp::protocol::{FileAttributes, OpenFlags, StatusCode};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tuki_core::port_errors::{FsError, TransferError};
@@ -101,10 +101,12 @@ impl RemoteFileSystem for RusshFileSystem {
                 if name == "." || name == ".." {
                     return None;
                 }
+                let metadata = entry.metadata();
                 Some(FileEntry {
                     path: path.join(&name).ok()?,
-                    is_dir: entry.file_type().is_dir(),
-                    size: entry.metadata().len(),
+                    is_dir: metadata.file_type().is_dir(),
+                    size: metadata.len(),
+                    permissions: metadata.permissions.map(|mode| mode & 0o7777),
                 })
             })
             .collect())
@@ -119,6 +121,7 @@ impl RemoteFileSystem for RusshFileSystem {
         Ok(FileStat {
             size: metadata.len(),
             is_dir: metadata.file_type().is_dir(),
+            permissions: metadata.permissions.map(|mode| mode & 0o7777),
         })
     }
 
@@ -149,6 +152,18 @@ impl RemoteFileSystem for RusshFileSystem {
     async fn mkdir(&self, conn: ConnectionId, path: &RemotePath) -> Result<(), FsError> {
         self.run(conn, |session| async move {
             session.create_dir(path.as_str()).await
+        })
+        .await
+    }
+
+    async fn chmod(&self, conn: ConnectionId, path: &RemotePath, mode: u32) -> Result<(), FsError> {
+        // Solo se envían los bits de permiso: el tipo de archivo no se toca.
+        let metadata = FileAttributes {
+            permissions: Some(mode & 0o7777),
+            ..FileAttributes::default()
+        };
+        self.run(conn, |session| async move {
+            session.set_metadata(path.as_str(), metadata).await
         })
         .await
     }

@@ -124,6 +124,8 @@ pub struct FileEntry {
     pub path: RemotePath,
     pub is_dir: bool,
     pub size: u64,
+    /// Bits de permiso Unix (`0o7777`), si el servidor los reporta.
+    pub permissions: Option<u32>,
 }
 
 /// Atributos de un archivo remoto.
@@ -131,6 +133,8 @@ pub struct FileEntry {
 pub struct FileStat {
     pub size: u64,
     pub is_dir: bool,
+    /// Bits de permiso Unix (`0o7777`), si el servidor los reporta.
+    pub permissions: Option<u32>,
 }
 
 /// Clave de un secreto de sesión; nunca identifica una passphrase de llave (ADR-004).
@@ -239,6 +243,13 @@ pub trait RemoteFileSystem: Send + Sync {
         &self,
         conn: ConnectionId,
         path: &RemotePath,
+    ) -> impl Future<Output = Result<(), FsError>> + Send;
+    /// Cambia los bits de permiso Unix de una ruta, sin tocar el tipo de archivo.
+    fn chmod(
+        &self,
+        conn: ConnectionId,
+        path: &RemotePath,
+        mode: u32,
     ) -> impl Future<Output = Result<(), FsError>> + Send;
     fn home(&self, conn: ConnectionId) -> impl Future<Output = Result<RemotePath, FsError>> + Send;
 }
