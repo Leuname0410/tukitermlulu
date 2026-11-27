@@ -659,6 +659,89 @@ mod tests {
     }
 
     #[test]
+    fn should_flush_kept_bytes_before_new_output_when_expiring_while_data_arrives() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        use tuki_core::ports::{ExecOutput, MockSshTransport};
+
+        let filter = Arc::new(Mutex::new(EchoFilter::new()));
+        let output_bytes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let output = {
+            let seen = Arc::clone(&output_bytes);
+            let probe = Arc::clone(&filter);
+            Arc::new(Mutex::new(Channel::new(move |body| {
+                // Orden fijo de locks: filtro -> output, también al enviar.
+                assert!(probe.try_lock().is_err());
+                if let InvokeResponseBody::Raw(bytes) = body {
+                    seen.lock().unwrap().push(bytes);
+                }
+                Ok(())
+            })))
+        };
+        let clock = QuietClock::new(Instant::now());
+        let sink = ChannelSink::new(
+            Arc::clone(&output),
+            Channel::new(move |_body| Ok(())),
+            noop_cwd(),
+            Arc::clone(&filter),
+            clock.clone(),
+        );
+
+        // La shell ecoa la línea inyectada mientras el filtro está activo.
+        let echo_filter = Arc::clone(&filter);
+        let mut transport = MockSshTransport::new();
+        transport.expect_exec().once().returning(|_, _| {
+            Box::pin(async {
+                Ok(ExecOutput {
+                    stdout: b"::/bin/bash".to_vec(),
+                    stderr: Vec::new(),
+                    status: Some(0),
+                })
+            })
+        });
+        transport.expect_write().once().returning(move |_, _| {
+            echo_filter.lock().unwrap().push(b"eco oculto");
+            Box::pin(async { Ok(()) })
+        });
+
+        let (start_tx, start_rx) = mpsc::channel();
+        let (attempt_tx, attempt_rx) = mpsc::channel();
+        let data_thread = std::thread::spawn(move || {
+            start_rx.recv().unwrap();
+            attempt_tx.send(()).unwrap();
+            sink.data(b"prompt$ ");
+        });
+
+        let flush_output = Arc::clone(&output);
+        block_on(integrate(
+            Arc::new(transport),
+            ConnectionId::new(1),
+            ChannelId::new(2),
+            clock,
+            filter,
+            HookTiming {
+                quiet: Duration::ZERO,
+                max_wait: Duration::ZERO,
+                expire: Duration::ZERO,
+            },
+            move |pending| {
+                start_tx.send(()).unwrap();
+                attempt_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+                let _ = flush_output
+                    .lock()
+                    .unwrap()
+                    .send(InvokeResponseBody::Raw(pending));
+            },
+        ));
+        data_thread.join().unwrap();
+
+        let bodies = output_bytes.lock().unwrap();
+        let visible: Vec<&[u8]> = bodies.iter().map(Vec::as_slice).collect();
+        assert_eq!(visible, vec![b"eco oculto".as_slice(), b"prompt$ ".as_slice()]);
+    }
+
+    #[test]
     fn should_emit_cwd_only_when_the_path_changes() {
         let (mut sink, _, cwd_paths) = recording_sink();
 
