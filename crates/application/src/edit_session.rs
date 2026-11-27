@@ -1,7 +1,8 @@
 //! Casos de uso para crear y editar sesiones.
 
+use tuki_core::auth::AuthMethod;
 use tuki_core::port_errors::RepositoryError;
-use tuki_core::ports::{SecretStore, SecretString, SessionRepository};
+use tuki_core::ports::{SecretKey, SecretStore, SecretString, SessionRepository};
 use tuki_core::session::Session;
 
 use crate::session_errors::{PasswordChange, SessionDraft, SessionError};
@@ -21,10 +22,26 @@ impl<R: SessionRepository, S: SecretStore> CreateSession<R, S> {
     /// Crea la sesión y guarda la contraseña solo cuando el auth lo pide.
     pub async fn execute(
         &self,
-        _draft: SessionDraft,
-        _password: Option<&SecretString>,
+        draft: SessionDraft,
+        password: Option<&SecretString>,
     ) -> Result<Session, SessionError> {
-        Err(SessionError::Repository(RepositoryError::NotFound))
+        let id = self.repo.next_session_id().await?;
+        let session = Session::new(
+            id,
+            &draft.name,
+            draft.host,
+            draft.auth.clone(),
+            draft.folder,
+        )?;
+        self.repo.save_session(&session).await?;
+
+        if matches!(draft.auth, AuthMethod::Password { remember: true })
+            && let Some(value) = password
+        {
+            self.secrets.set(&SecretKey { session: id }, value).await?;
+        }
+
+        Ok(session)
     }
 }
 
@@ -43,9 +60,46 @@ impl<R: SessionRepository, S: SecretStore> UpdateSession<R, S> {
     /// Guarda los cambios de la sesión y aplica el cambio de contraseña.
     pub async fn execute(
         &self,
-        _session: &Session,
-        _password: PasswordChange,
+        session: &Session,
+        password: PasswordChange,
     ) -> Result<(), SessionError> {
+        let existing = self.repo.get_session(session.id).await?;
+        if existing.is_none() {
+            return Err(SessionError::Repository(RepositoryError::NotFound));
+        }
+
+        self.repo.save_session(session).await?;
+
+        match &session.auth {
+            AuthMethod::PublicKey { .. } | AuthMethod::Password { remember: false } => {
+                self.secrets
+                    .delete(&SecretKey {
+                        session: session.id,
+                    })
+                    .await?;
+            }
+            AuthMethod::Password { remember: true } => match password {
+                PasswordChange::Set(value) => {
+                    self.secrets
+                        .set(
+                            &SecretKey {
+                                session: session.id,
+                            },
+                            &value,
+                        )
+                        .await?;
+                }
+                PasswordChange::Forget => {
+                    self.secrets
+                        .delete(&SecretKey {
+                            session: session.id,
+                        })
+                        .await?;
+                }
+                PasswordChange::Keep => {}
+            },
+        }
+
         Ok(())
     }
 }
@@ -55,8 +109,8 @@ mod tests {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
-    use mockall::predicate::*;
     use mockall::Sequence;
+    use mockall::predicate::*;
     use tuki_core::auth::AuthMethod;
     use tuki_core::host::{Host, Hostname, Port, Username};
     use tuki_core::port_errors::{RepositoryError, SecretError};
@@ -93,7 +147,14 @@ mod tests {
     }
 
     fn session(id: u64, auth: AuthMethod) -> Session {
-        Session::new(SessionId::new(id), "srv", host(), auth, Some(FolderId::new(3))).unwrap()
+        Session::new(
+            SessionId::new(id),
+            "srv",
+            host(),
+            auth,
+            Some(FolderId::new(3)),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -115,13 +176,19 @@ mod tests {
             .once()
             .in_sequence(&mut seq)
             .withf(|key, value| {
-                *key == SecretKey { session: SessionId::new(10) } && value.expose() == "pw"
+                *key == SecretKey {
+                    session: SessionId::new(10),
+                } && value.expose() == "pw"
             })
             .returning(|_, _| Box::pin(async { Ok(()) }));
 
         let uc = CreateSession::new(repo, secrets);
         let result = block_on(uc.execute(
-            draft("prod", AuthMethod::Password { remember: true }, Some(FolderId::new(3))),
+            draft(
+                "prod",
+                AuthMethod::Password { remember: true },
+                Some(FolderId::new(3)),
+            ),
             Some(&SecretString::new("pw")),
         ))
         .unwrap();
@@ -167,8 +234,9 @@ mod tests {
             key: tuki_core::auth::KeyRef::new("~/.ssh/id_ed25519").unwrap(),
             has_passphrase: false,
         };
-        let result = block_on(uc.execute(draft("prod", auth, None), Some(&SecretString::new("pw"))))
-            .unwrap();
+        let result =
+            block_on(uc.execute(draft("prod", auth, None), Some(&SecretString::new("pw"))))
+                .unwrap();
         assert_eq!(result.id, SessionId::new(12));
     }
 
@@ -178,7 +246,9 @@ mod tests {
         repo.expect_get_session()
             .once()
             .with(eq(SessionId::new(7)))
-            .returning(|_| Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) }));
+            .returning(|_| {
+                Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) })
+            });
         repo.expect_save_session()
             .once()
             .withf(|s| s.host.port.get() == 2222 && s.host.username.as_str() == "bob")
@@ -206,9 +276,9 @@ mod tests {
     #[test]
     fn should_replace_stored_password_when_updating_with_set() {
         let mut repo = MockSessionRepository::new();
-        repo.expect_get_session()
-            .once()
-            .returning(|_| Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) }));
+        repo.expect_get_session().once().returning(|_| {
+            Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) })
+        });
         repo.expect_save_session()
             .once()
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -217,7 +287,9 @@ mod tests {
             .expect_set()
             .once()
             .withf(|key, value| {
-                *key == SecretKey { session: SessionId::new(7) } && value.expose() == "new-pw"
+                *key == SecretKey {
+                    session: SessionId::new(7),
+                } && value.expose() == "new-pw"
             })
             .returning(|_, _| Box::pin(async { Ok(()) }));
 
@@ -232,9 +304,9 @@ mod tests {
     #[test]
     fn should_delete_stored_password_when_updating_with_forget() {
         let mut repo = MockSessionRepository::new();
-        repo.expect_get_session()
-            .once()
-            .returning(|_| Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) }));
+        repo.expect_get_session().once().returning(|_| {
+            Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) })
+        });
         repo.expect_save_session()
             .once()
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -242,7 +314,9 @@ mod tests {
         secrets
             .expect_delete()
             .once()
-            .with(eq(SecretKey { session: SessionId::new(7) }))
+            .with(eq(SecretKey {
+                session: SessionId::new(7),
+            }))
             .returning(|_| Box::pin(async { Ok(()) }));
 
         let uc = UpdateSession::new(repo, secrets);
@@ -256,9 +330,9 @@ mod tests {
     #[test]
     fn should_delete_password_when_changing_auth_to_public_key() {
         let mut repo = MockSessionRepository::new();
-        repo.expect_get_session()
-            .once()
-            .returning(|_| Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) }));
+        repo.expect_get_session().once().returning(|_| {
+            Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) })
+        });
         repo.expect_save_session()
             .once()
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -266,7 +340,9 @@ mod tests {
         secrets
             .expect_delete()
             .once()
-            .with(eq(SecretKey { session: SessionId::new(7) }))
+            .with(eq(SecretKey {
+                session: SessionId::new(7),
+            }))
             .returning(|_| Box::pin(async { Ok(()) }));
         secrets.expect_set().times(0);
 
@@ -285,9 +361,9 @@ mod tests {
     #[test]
     fn should_delete_password_when_remember_is_disabled() {
         let mut repo = MockSessionRepository::new();
-        repo.expect_get_session()
-            .once()
-            .returning(|_| Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) }));
+        repo.expect_get_session().once().returning(|_| {
+            Box::pin(async { Ok(Some(session(7, AuthMethod::Password { remember: true }))) })
+        });
         repo.expect_save_session()
             .once()
             .returning(|_| Box::pin(async { Ok(()) }));
@@ -295,7 +371,9 @@ mod tests {
         secrets
             .expect_delete()
             .once()
-            .with(eq(SecretKey { session: SessionId::new(7) }))
+            .with(eq(SecretKey {
+                session: SessionId::new(7),
+            }))
             .returning(|_| Box::pin(async { Ok(()) }));
         secrets.expect_set().times(0);
 
@@ -324,7 +402,10 @@ mod tests {
             PasswordChange::Keep,
         ))
         .unwrap_err();
-        assert!(matches!(err, SessionError::Repository(RepositoryError::NotFound)));
+        assert!(matches!(
+            err,
+            SessionError::Repository(RepositoryError::NotFound)
+        ));
     }
 
     #[test]
@@ -348,7 +429,10 @@ mod tests {
             Some(&SecretString::new("topsecret-value")),
         ))
         .unwrap_err();
-        assert!(matches!(err, SessionError::Secret(SecretError::Unavailable)));
+        assert!(matches!(
+            err,
+            SessionError::Secret(SecretError::Unavailable)
+        ));
         let msg = format!("{err}");
         assert!(!msg.contains("topsecret-value"));
     }

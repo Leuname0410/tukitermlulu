@@ -1,7 +1,7 @@
 //! Casos de uso para duplicar y borrar sesiones.
 
 use tuki_core::port_errors::RepositoryError;
-use tuki_core::ports::{SecretStore, SessionRepository};
+use tuki_core::ports::{SecretKey, SecretStore, SessionRepository};
 use tuki_core::session::{Session, SessionId};
 
 use crate::session_errors::SessionError;
@@ -18,8 +18,22 @@ impl<R: SessionRepository> DuplicateSession<R> {
     }
 
     /// Duplica la sesión con un id nuevo y nombre derivado.
-    pub async fn execute(&self, _id: SessionId) -> Result<Session, SessionError> {
-        Err(SessionError::Repository(RepositoryError::NotFound))
+    pub async fn execute(&self, id: SessionId) -> Result<Session, SessionError> {
+        let existing = self
+            .repo
+            .get_session(id)
+            .await?
+            .ok_or(SessionError::Repository(RepositoryError::NotFound))?;
+        let next_id = self.repo.next_session_id().await?;
+        let copy = Session::new(
+            next_id,
+            &format!("{} (copia)", existing.name),
+            existing.host,
+            existing.auth,
+            existing.folder,
+        )?;
+        self.repo.save_session(&copy).await?;
+        Ok(copy)
     }
 }
 
@@ -36,7 +50,9 @@ impl<R: SessionRepository, S: SecretStore> DeleteSession<R, S> {
     }
 
     /// Borra la sesión y elimina su contraseña guardada.
-    pub async fn execute(&self, _id: SessionId) -> Result<(), SessionError> {
+    pub async fn execute(&self, id: SessionId) -> Result<(), SessionError> {
+        self.repo.delete_session(id).await?;
+        self.secrets.delete(&SecretKey { session: id }).await?;
         Ok(())
     }
 }
@@ -46,8 +62,8 @@ mod tests {
     use std::future::Future;
     use std::task::{Context, Poll, Waker};
 
-    use mockall::predicate::*;
     use mockall::Sequence;
+    use mockall::predicate::*;
     use tuki_core::auth::AuthMethod;
     use tuki_core::host::{Host, Hostname, Port, Username};
     use tuki_core::port_errors::{RepositoryError, SecretError};
@@ -128,7 +144,10 @@ mod tests {
 
         let uc = DuplicateSession::new(repo);
         let err = block_on(uc.execute(SessionId::new(99))).unwrap_err();
-        assert!(matches!(err, SessionError::Repository(RepositoryError::NotFound)));
+        assert!(matches!(
+            err,
+            SessionError::Repository(RepositoryError::NotFound)
+        ));
     }
 
     #[test]
@@ -145,7 +164,9 @@ mod tests {
             .expect_delete()
             .once()
             .in_sequence(&mut seq)
-            .with(eq(SecretKey { session: SessionId::new(7) }))
+            .with(eq(SecretKey {
+                session: SessionId::new(7),
+            }))
             .returning(|_| Box::pin(async { Ok(()) }));
 
         let uc = DeleteSession::new(repo, secrets);
