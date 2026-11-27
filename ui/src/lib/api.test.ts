@@ -4,6 +4,7 @@ import {
   type AuthArgs,
   type ConnectArgs,
   type ConnectResponse,
+  closeTab,
   connect,
   disconnect,
   isCommandError,
@@ -28,6 +29,7 @@ interface ChannelLike {
 }
 
 interface ConnectPayload {
+  tabId: number;
   args: ConnectArgs;
   onOutput: ChannelLike;
   onClosed: ChannelLike;
@@ -77,11 +79,12 @@ describe("typed terminal api", () => {
     const onClosed = vi.fn<(status: number | null) => void>();
     const request = args();
 
-    const response = await connect(request, { onData, onClosed });
+    const response = await connect(7, request, { onData, onClosed });
 
     const call = firstCall();
     expect(call[0]).toBe("connect");
     const payload = connectPayload(call);
+    expect(payload.tabId).toBe(7);
     expect(payload.args).toBe(request);
     expect(payload.onOutput).not.toBe(payload.onClosed);
     expect(response).toEqual({ kind: "connected", connectionId: 1, channelId: 2 });
@@ -96,7 +99,7 @@ describe("typed terminal api", () => {
     const onData = vi.fn<(bytes: Uint8Array) => void>();
     const onClosed = vi.fn<(status: number | null) => void>();
 
-    await connect(args(), { onData, onClosed });
+    await connect(7, args(), { onData, onClosed });
 
     const payload = connectPayload(firstCall());
     const bytes = new Uint8Array([1, 2, 3]);
@@ -122,7 +125,9 @@ describe("typed terminal api", () => {
 
     for (const [raw, expected] of cases) {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
-      await expect(connect(args(), { onData: () => {}, onClosed: () => {} })).resolves.toEqual(expected);
+      await expect(
+        connect(7, args(), { onData: () => {}, onClosed: () => {} }),
+      ).resolves.toEqual(expected);
     }
   });
 
@@ -149,6 +154,14 @@ describe("typed terminal api", () => {
       cols: 80,
     });
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "disconnect", { connectionId: 9 });
+  });
+
+  it("should invoke close_tab with the tab id", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(undefined);
+
+    await closeTab(11);
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("close_tab", { tabId: 11 });
   });
 
   it("should narrow only well-formed command errors", () => {
