@@ -349,3 +349,74 @@ async fn should_report_permission_denied_when_uploading_to_root() {
     assert!(matches!(result, Err(TransferError::PermissionDenied)));
     assert!(transport.close(connected.id).await.is_ok());
 }
+
+#[tokio::test]
+async fn should_keep_preexisting_local_part_when_downloading() {
+    let (transport, connected, fs) = fs().await;
+    let dir = tempfile::tempdir().unwrap();
+    let downloaded = dir.path().join("downloaded.bin");
+    let part = local_part(&downloaded);
+    std::fs::write(&part, b"keep me").unwrap();
+
+    let result = fs
+        .download(
+            connected.id,
+            &remote("/etc/hostname".to_owned()),
+            &downloaded,
+            &Progress::new().0,
+            &CancelToken::default(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(TransferError::AlreadyExists)));
+    assert_eq!(std::fs::read(&part).unwrap(), b"keep me");
+    assert!(!downloaded.exists());
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_keep_preexisting_remote_part_when_uploading() {
+    let (transport, connected, fs) = fs().await;
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.bin");
+    let original = dir.path().join("original.part");
+    std::fs::write(&source, b"new data").unwrap();
+    std::fs::write(&original, b"keep me").unwrap();
+    let target = unique_remote();
+    let part = remote_part(&target);
+    fs.upload(
+        connected.id,
+        &original,
+        &part,
+        &Progress::new().0,
+        &CancelToken::default(),
+    )
+    .await
+    .unwrap();
+
+    let result = fs
+        .upload(
+            connected.id,
+            &source,
+            &target,
+            &Progress::new().0,
+            &CancelToken::default(),
+        )
+        .await;
+
+    assert!(matches!(result, Err(TransferError::AlreadyExists)));
+    let restored = dir.path().join("restored.bin");
+    fs.download(
+        connected.id,
+        &part,
+        &restored,
+        &Progress::new().0,
+        &CancelToken::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(&restored).unwrap(), b"keep me");
+    assert!(missing(&fs, connected.id, &target).await);
+    assert!(fs.remove(connected.id, &part).await.is_ok());
+    assert!(transport.close(connected.id).await.is_ok());
+}
