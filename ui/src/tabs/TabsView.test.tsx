@@ -143,7 +143,7 @@ describe("TabsView and QuickConnect", () => {
     render(<App />);
     await openConnectingTab();
     expect(await screen.findByText("SHA256:abc")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Aceptar huella" }));
+    fireEvent.click(screen.getByRole("button", { name: "Aceptar" }));
 
     await screen.findByTestId("terminal-22");
     const [, args] = connectCall(1);
@@ -168,7 +168,7 @@ describe("TabsView and QuickConnect", () => {
     submitQuickConnect();
     await screen.findByRole("tab", { name: /alice@example.com/i });
     expect(await screen.findByText("La huella del host cambió")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Aceptar huella" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Aceptar" })).toBeNull();
   });
 
   it("should show dropped session on onClosed and reconnect without passphrase", async () => {
