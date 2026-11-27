@@ -152,6 +152,16 @@ impl RemoteFileSystem for RusshFileSystem {
         })
         .await
     }
+
+    async fn home(&self, conn: ConnectionId) -> Result<RemotePath, FsError> {
+        let home = self
+            .run(
+                conn,
+                |session| async move { session.canonicalize(".").await },
+            )
+            .await?;
+        RemotePath::new(&home).map_err(|_| FsError::Operation)
+    }
 }
 
 impl FileTransfer for RusshFileSystem {

@@ -240,6 +240,7 @@ pub trait RemoteFileSystem: Send + Sync {
         conn: ConnectionId,
         path: &RemotePath,
     ) -> impl Future<Output = Result<(), FsError>> + Send;
+    fn home(&self, conn: ConnectionId) -> impl Future<Output = Result<RemotePath, FsError>> + Send;
 }
 
 /// Progreso síncrono y barato de una transferencia; lo invoca el adaptador.
