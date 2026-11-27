@@ -337,7 +337,7 @@ describe("TerminalView", () => {
     });
 
     fireEvent.contextMenu(screen.getByRole("region", { name: "Terminal" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Pegar" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Pegar" }));
     await waitFor(() => {
       expect(terminal.pasted).toEqual([
         "texto del portapapeles",
@@ -376,6 +376,53 @@ describe("TerminalView", () => {
       await vi.advanceTimersByTimeAsync(100);
     });
     expect(apiMocks.resizes).toHaveLength(1);
+  });
+
+  it.each(["mac", "other"] as const)(
+    "should prevent the native clipboard event when the shortcut is pressed on %s",
+    async (platform) => {
+      render(<TerminalView channelId={7} source={silentSource} platform={platform} />);
+      const registered = lastTerminal().keyHandler;
+      if (!registered) {
+        throw new Error("No se registró el manejador de teclas");
+      }
+      const handler = registered;
+      const modifiers = platform === "mac" ? { metaKey: true } : { ctrlKey: true, shiftKey: true };
+
+      for (const key of ["c", "v"]) {
+        const event = new KeyboardEvent("keydown", { key, ...modifiers });
+        const preventDefault = vi.spyOn(event, "preventDefault");
+        await act(async () => {
+          handler(event);
+        });
+        expect(preventDefault).toHaveBeenCalledTimes(1);
+      }
+      expect(apiMocks.writes).toHaveLength(0);
+    },
+  );
+
+  it("should show a fixed context menu with menu items closed by Escape and outside click", async () => {
+    render(<TerminalView channelId={7} source={silentSource} platform="other" />);
+    fireEvent.contextMenu(screen.getByRole("region", { name: "Terminal" }), {
+      clientX: 42,
+      clientY: 84,
+    });
+
+    const menu = screen.getByRole("menu");
+    expect(menu.style.position).toBe("fixed");
+    expect(menu.style.left).toBe("42px");
+    expect(menu.style.top).toBe("84px");
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
+      "Copiar",
+      "Pegar",
+    ]);
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    fireEvent.contextMenu(screen.getByRole("region", { name: "Terminal" }));
+    fireEvent.click(document.body);
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("should detach and dispose on unmount", () => {
