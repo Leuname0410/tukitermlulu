@@ -5557,6 +5557,7 @@ name = "tuki-application"
 version = "0.1.0"
 dependencies = [
  "mockall",
+ "thiserror 2.0.21",
  "tuki-core",
 ]
 
