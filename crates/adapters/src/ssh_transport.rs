@@ -55,13 +55,19 @@ struct PtyChannel {
 /// Canales PTY compartidos con la tarea lectora; nunca se retiene el lock durante I/O.
 type SharedChannels = Arc<Mutex<HashMap<ChannelId, PtyChannel>>>;
 
-/// Transporte SSH con keepalive activo y connections indexadas por `ConnectionId`.
-pub struct RusshTransport {
+/// Estado interno compartido: todos los clones ven las mismas conexiones y canales.
+struct Inner {
     config: Arc<Config>,
     connections: Mutex<HashMap<ConnectionId, SharedConnection>>,
     channels: SharedChannels,
     next_id: AtomicU64,
     next_channel_id: AtomicU64,
+}
+
+/// Transporte SSH con keepalive activo y connections indexadas por `ConnectionId`.
+#[derive(Clone)]
+pub struct RusshTransport {
+    inner: Arc<Inner>,
 }
 
 impl RusshTransport {
@@ -74,11 +80,13 @@ impl RusshTransport {
             ..Config::default()
         };
         Self {
-            config: Arc::new(config),
-            connections: Mutex::new(HashMap::new()),
-            channels: Arc::new(Mutex::new(HashMap::new())),
-            next_id: AtomicU64::new(1),
-            next_channel_id: AtomicU64::new(1),
+            inner: Arc::new(Inner {
+                config: Arc::new(config),
+                connections: Mutex::new(HashMap::new()),
+                channels: Arc::new(Mutex::new(HashMap::new())),
+                next_id: AtomicU64::new(1),
+                next_channel_id: AtomicU64::new(1),
+            }),
         }
     }
 }
@@ -96,7 +104,7 @@ impl SshTransport for RusshTransport {
             fingerprint: Arc::clone(&observed),
         };
         let address = (host.hostname.as_str(), host.port.get());
-        let handle = russh::client::connect(Arc::clone(&self.config), address, handler)
+        let handle = russh::client::connect(Arc::clone(&self.inner.config), address, handler)
             .await
             .map_err(|_| TransportError::Connect)?;
         let raw = observed
@@ -105,12 +113,13 @@ impl SshTransport for RusshTransport {
             .take()
             .ok_or(TransportError::Connect)?;
         let fingerprint = HostKeyFingerprint::new(&raw).map_err(|_| TransportError::Connect)?;
-        let id = ConnectionId::new(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let id = ConnectionId::new(self.inner.next_id.fetch_add(1, Ordering::Relaxed));
         let stored = StoredConnection {
             handle,
             username: host.username.as_str().to_owned(),
         };
-        self.connections
+        self.inner
+            .connections
             .lock()
             .await
             .insert(id, Arc::new(Mutex::new(stored)));
@@ -123,7 +132,7 @@ impl SshTransport for RusshTransport {
         credential: Credential,
     ) -> Result<(), TransportError> {
         let connection = {
-            let connections = self.connections.lock().await;
+            let connections = self.inner.connections.lock().await;
             Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
         };
         let mut stored = connection.lock().await;
@@ -165,7 +174,7 @@ impl SshTransport for RusshTransport {
     ) -> Result<ChannelId, TransportError> {
         let channel = {
             let connection = {
-                let connections = self.connections.lock().await;
+                let connections = self.inner.connections.lock().await;
                 Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
             };
             let stored = connection.lock().await;
@@ -193,8 +202,8 @@ impl SshTransport for RusshTransport {
             .map_err(|_| TransportError::OpenPty)?;
 
         let (mut reader, writer) = channel.split();
-        let channel_id = ChannelId::new(self.next_channel_id.fetch_add(1, Ordering::Relaxed));
-        let channels = Arc::clone(&self.channels);
+        let channel_id = ChannelId::new(self.inner.next_channel_id.fetch_add(1, Ordering::Relaxed));
+        let channels = Arc::clone(&self.inner.channels);
         channels.lock().await.insert(
             channel_id,
             PtyChannel {
@@ -242,7 +251,7 @@ impl SshTransport for RusshTransport {
 
     async fn write(&self, channel: ChannelId, bytes: &[u8]) -> Result<(), TransportError> {
         let writer = {
-            let channels = self.channels.lock().await;
+            let channels = self.inner.channels.lock().await;
             Arc::clone(
                 &channels
                     .get(&channel)
@@ -258,7 +267,7 @@ impl SshTransport for RusshTransport {
 
     async fn resize(&self, channel: ChannelId, size: PtySize) -> Result<(), TransportError> {
         let writer = {
-            let channels = self.channels.lock().await;
+            let channels = self.inner.channels.lock().await;
             Arc::clone(
                 &channels
                     .get(&channel)
@@ -274,13 +283,13 @@ impl SshTransport for RusshTransport {
 
     async fn close(&self, conn: ConnectionId) -> Result<(), TransportError> {
         let connection = {
-            let mut connections = self.connections.lock().await;
+            let mut connections = self.inner.connections.lock().await;
             connections
                 .remove(&conn)
                 .ok_or(TransportError::NotConnected)?
         };
         let writers = {
-            let mut channels = self.channels.lock().await;
+            let mut channels = self.inner.channels.lock().await;
             let ids: Vec<ChannelId> = channels
                 .iter()
                 .filter(|(_, pty)| pty.connection == conn)
