@@ -4,12 +4,24 @@ import {
   type AuthArgs,
   type ConnectArgs,
   type ConnectResponse,
+  type FolderDto,
+  type PasswordInput,
+  type SessionDto,
+  type SessionInput,
   closeTab,
   connect,
+  createSession,
+  deleteFolder,
+  deleteSession,
   disconnect,
+  duplicateSession,
   isCommandError,
+  listFolders,
+  listSessions,
+  saveFolder,
   terminalResize,
   terminalWrite,
+  updateSession,
 } from "./api";
 
 vi.mock("@tauri-apps/api/core", () => {
@@ -59,10 +71,36 @@ function args(): ConnectArgs {
     port: 22,
     username: "alice",
     auth,
+    sessionId: 3,
     rows: 24,
     cols: 80,
   };
 }
+
+const sessionInput: SessionInput = {
+  name: "prod",
+  host: "example.com",
+  port: 22,
+  username: "alice",
+  auth: { kind: "password", remember: true },
+  folder: null,
+};
+
+const sessionRaw = {
+  id: 1,
+  name: "prod",
+  host: "example.com",
+  port: 22,
+  username: "alice",
+  auth: { kind: "password", remember: true },
+  folder: null,
+  passwordSaved: true,
+};
+
+const sessionDto: SessionDto = { ...sessionInput, id: 1, passwordSaved: true };
+
+const folderRaw = { id: 2, name: "producción", parent: null };
+const folderDto: FolderDto = folderRaw;
 
 describe("typed terminal api", () => {
   beforeEach(() => {
@@ -179,6 +217,71 @@ describe("typed terminal api", () => {
       { kind: "io", message: "x", fingerprint: 7 },
     ]) {
       expect(isCommandError(invalid)).toBe(false);
+    }
+  });
+
+  it("should invoke session commands with camelCase arguments when managing sessions", async () => {
+    const password: PasswordInput = { kind: "set", value: "new-pw" };
+    vi.mocked(invoke).mockResolvedValue(sessionRaw);
+    expect(await createSession(sessionInput, "pw")).toEqual(sessionDto);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, "create_session", {
+      input: sessionInput,
+      password: "pw",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await updateSession(1, sessionInput, password);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "update_session", {
+      id: 1,
+      input: sessionInput,
+      password,
+    });
+
+    vi.mocked(invoke).mockResolvedValue(sessionRaw);
+    expect(await duplicateSession(1)).toEqual(sessionDto);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(3, "duplicate_session", { id: 1 });
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await deleteSession(1);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(4, "delete_session", { id: 1 });
+  });
+
+  it("should invoke folder commands with null optionals when saving and deleting", async () => {
+    vi.mocked(invoke).mockResolvedValue(folderRaw);
+    expect(await saveFolder({ name: "producción" })).toEqual(folderDto);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, "save_folder", {
+      id: null,
+      name: "producción",
+      parent: null,
+    });
+
+    vi.mocked(invoke).mockResolvedValue([folderRaw]);
+    expect(await listFolders()).toEqual([folderDto]);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "list_folders");
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await deleteFolder(2);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(3, "delete_folder", { id: 2 });
+  });
+
+  it("should return parsed sessions when listing them", async () => {
+    vi.mocked(invoke).mockResolvedValue([sessionRaw]);
+
+    expect(await listSessions()).toEqual([sessionDto]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_sessions");
+  });
+
+  it("should reject malformed responses when listing sessions", async () => {
+    const malformed: unknown[] = [
+      null,
+      {},
+      [{ ...sessionRaw, id: "1" }],
+      [{ ...sessionRaw, passwordSaved: "true" }],
+      [{ ...sessionRaw, auth: { kind: "key", path: 7, hasPassphrase: false } }],
+    ];
+    for (const raw of malformed) {
+      vi.mocked(invoke).mockResolvedValueOnce(raw);
+      await expect(listSessions()).rejects.toThrow();
     }
   });
 });

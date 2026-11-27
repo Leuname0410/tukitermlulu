@@ -376,6 +376,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn should_share_connection_when_cloning_repository() {
+        let repo = SqliteSessionRepository::in_memory().expect("repositorio");
+        let clone = repo.clone();
+        repo.save_session(&password_session(1, "prod", None))
+            .await
+            .expect("guardar");
+        assert_eq!(
+            clone.get_session(SessionId::new(1)).await.expect("leer"),
+            Some(password_session(1, "prod", None))
+        );
+    }
+
+    #[tokio::test]
     async fn should_round_trip_key_session_when_saving_and_getting() {
         let repo = SqliteSessionRepository::in_memory().expect("repositorio");
         let session = key_session(2);
