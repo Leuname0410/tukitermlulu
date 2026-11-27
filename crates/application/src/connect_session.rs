@@ -59,6 +59,7 @@ pub struct ConnectSession<T: SshTransport, V: HostKeyVerifier, K: KeyLoader, S: 
     secrets: S,
 }
 
+#[rustfmt::skip]
 impl<T, V, K, S> ConnectSession<T, V, K, S>
 where
     T: SshTransport,
@@ -68,20 +69,45 @@ where
 {
     /// Crea el caso de uso con los puertos que necesita.
     pub fn new(transport: T, verifier: V, keys: K, secrets: S) -> Self {
-        Self {
-            transport,
-            verifier,
-            keys,
-            secrets,
-        }
+        Self { transport, verifier, keys, secrets }
     }
 
     /// Ejecuta la conexión indicada por la petición.
-    pub async fn execute(
-        &self,
-        _request: ConnectRequest<'_>,
-    ) -> Result<ConnectOutcome, ConnectError> {
-        Err(ConnectError::Transport(TransportError::Connect))
+    pub async fn execute(&self, request: ConnectRequest<'_>) -> Result<ConnectOutcome, ConnectError> {
+        let connected = self.transport.connect(&request.session.host).await?;
+        let id = connected.id;
+        let outcome = self.after_connect(connected, request).await;
+        if !matches!(&outcome, Ok(ConnectOutcome::Connected { .. })) { let _ = self.transport.close(id).await; }
+        outcome
+    }
+
+    /// Completa la conexión ya establecida; `execute` cierra si no hay éxito.
+    async fn after_connect(&self, connected: Connected, request: ConnectRequest<'_>) -> Result<ConnectOutcome, ConnectError> {
+        let Connected { id, fingerprint } = connected;
+        match self.verifier.verify(&request.session.host, &fingerprint).await? {
+            HostKeyStatus::Known => {}
+            HostKeyStatus::Unknown if request.approved_fingerprint == Some(&fingerprint) => { self.verifier.trust(&request.session.host, &fingerprint).await?; }
+            HostKeyStatus::Unknown => { return Ok(ConnectOutcome::NeedsHostKeyApproval { fingerprint }); }
+            HostKeyStatus::Changed => { return Err(ConnectError::HostKeyChanged { fingerprint }); }
+        }
+        let credential = match &request.session.auth {
+            AuthMethod::Password { remember } => {
+                let password = match request.password {
+                    Some(typed) => Some(SecretString::new(typed.expose())),
+                    None if *remember => self.secrets.get(&SecretKey { session: request.session.id }).await?,
+                    None => None,
+                };
+                match password { Some(password) => Credential::Password(password), None => return Ok(ConnectOutcome::NeedsPassword) }
+            }
+            AuthMethod::PublicKey { key, .. } => match self.keys.load(key, request.passphrase).await {
+                Ok(key) => Credential::PublicKey(key),
+                Err(KeyError::PassphraseRequired) => return Ok(ConnectOutcome::NeedsPassphrase),
+                Err(error) => return Err(ConnectError::Key(error)),
+            },
+        };
+        self.transport.authenticate(id, credential).await?;
+        let channel = self.transport.open_pty(id, request.pty_size, request.sink).await?;
+        Ok(ConnectOutcome::Connected { connection: id, channel })
     }
 }
 
@@ -125,7 +151,9 @@ mod tests {
         let mut keys = MockKeyLoader::new();
         transport.expect_connect().once().in_sequence(&mut seq).returning(|_| Box::pin(async { Ok(Connected { id: ConnectionId::new(1), fingerprint: fp() }) }));
         verifier.expect_verify().once().in_sequence(&mut seq).returning(move |_, _| Box::pin(async move { Ok(status) }));
-        verifier.expect_trust().times(trust_times).in_sequence(&mut seq).returning(|_, _| Box::pin(async { Ok(()) }));
+        let trust = verifier.expect_trust().times(trust_times);
+        if trust_times > 0 { trust.in_sequence(&mut seq); }
+        trust.returning(|_, _| Box::pin(async { Ok(()) }));
         if password.is_none() { keys.expect_load().once().in_sequence(&mut seq).returning(|_, _| Box::pin(async { Ok(PrivateKey::new(vec![1, 2, 3])) })); }
         if let Some(expected) = password {
             transport.expect_authenticate().once().in_sequence(&mut seq).withf(move |_, credential| matches!(credential, Credential::Password(secret) if secret.expose() == expected)).returning(|_, _| Box::pin(async { Ok(()) }));
