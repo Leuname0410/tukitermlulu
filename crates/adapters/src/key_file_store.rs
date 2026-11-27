@@ -52,7 +52,7 @@ impl KeyFileStore for FsKeyFileStore {
 
         for suffix in 0u64.. {
             let candidate = self.dir.join(versioned_name(&name, suffix));
-            match tokio::fs::read(&candidate).await {
+            match tokio::fs::read(&candidate).await.map(Zeroizing::new) {
                 Ok(existing) if existing.as_slice() == content.as_slice() => {
                     return to_key_ref(&candidate);
                 }
