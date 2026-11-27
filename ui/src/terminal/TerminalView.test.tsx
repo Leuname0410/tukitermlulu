@@ -355,7 +355,15 @@ describe("TerminalView", () => {
     expect(lastTerminal().addons).not.toContain("webgl");
   });
 
-  it("should call terminalResize once after the debounce when the size changes", async () => {
+  it("should resize the PTY to the fitted size when the terminal mounts", () => {
+    mocks.size = { rows: 40, cols: 120 };
+
+    render(<TerminalView channelId={7} source={silentSource} platform="other" />);
+
+    expect(apiMocks.resizes).toEqual([{ channelId: 7, rows: 40, cols: 120 }]);
+  });
+
+  it("should call terminalResize once more after the debounce when the size changes", async () => {
     vi.useFakeTimers();
     render(<TerminalView channelId={7} source={silentSource} platform="other" />);
     const observer = required(mocks.observers[0], "No se creó ResizeObserver");
@@ -364,18 +372,21 @@ describe("TerminalView", () => {
     await act(async () => {
       observer.callback();
     });
-    expect(apiMocks.resizes).toHaveLength(0);
+    expect(apiMocks.resizes).toEqual([{ channelId: 7, rows: 24, cols: 80 }]);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(100);
     });
-    expect(apiMocks.resizes).toEqual([{ channelId: 7, rows: 40, cols: 120 }]);
+    expect(apiMocks.resizes).toEqual([
+      { channelId: 7, rows: 24, cols: 80 },
+      { channelId: 7, rows: 40, cols: 120 },
+    ]);
 
     await act(async () => {
       observer.callback();
       await vi.advanceTimersByTimeAsync(100);
     });
-    expect(apiMocks.resizes).toHaveLength(1);
+    expect(apiMocks.resizes).toHaveLength(2);
   });
 
   it.each(["mac", "other"] as const)(

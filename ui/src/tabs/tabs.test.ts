@@ -248,6 +248,18 @@ describe("createTabController", () => {
     expect(h.actions.at(-1)).toEqual({ type: "closed", id: 7 });
   });
 
+  it("should close the tab even when closeTab fails", async () => {
+    const h = harness();
+    await h.controller.connect({}, size);
+    vi.mocked(closeTab).mockRejectedValueOnce(new Error("cierre fallido"));
+
+    await h.controller.close();
+
+    expect(disconnect).toHaveBeenCalledWith(3);
+    expect(closeTab).toHaveBeenCalledWith(7);
+    expect(h.actions.at(-1)).toEqual({ type: "closed", id: 7 });
+  });
+
   it("should close the tab without disconnecting when there is no connection", async () => {
     const h = harness();
 
