@@ -203,11 +203,57 @@ mod tests {
     #[test]
     fn should_set_prompt_when_building_cmd_line() {
         let line = integration_line(ShellKind::Cmd).unwrap();
-        assert!(line.contains("prompt $E]7;file:///$P$E\\$P$G"));
+        assert!(line.contains("prompt $E]7;file:///$P$E\\"));
+    }
+
+    #[test]
+    fn should_emit_ready_marker_before_clearing_the_line_when_building_integration_lines() {
+        let cases = [
+            (ShellKind::Bash, r"\033[K"),
+            (ShellKind::Zsh, r"\033[K"),
+            (ShellKind::Fish, r"\e[K"),
+            (ShellKind::PowerShell, "$([char]27)[K"),
+            (ShellKind::Cmd, "$E[2K"),
+        ];
+        for (shell, clear) in cases {
+            let line = integration_line(shell).unwrap_or_else(|| panic!("línea para {shell:?}"));
+            let marker = line
+                .find("]777;tuki-ready")
+                .unwrap_or_else(|| panic!("marcador para {shell:?}"));
+            let clear_at = line
+                .find(clear)
+                .unwrap_or_else(|| panic!("limpieza para {shell:?}"));
+            assert!(
+                marker < clear_at,
+                "{shell:?}: marcador en {marker}, limpieza en {clear_at}"
+            );
+        }
+    }
+
+    #[test]
+    fn should_use_char_casts_when_building_powershell_escapes() {
+        let line = integration_line(ShellKind::PowerShell).unwrap();
+        assert!(!line.contains("`e"), "Windows PowerShell 5.1 no entiende `e");
+        assert!(!line.contains("`a"), "Windows PowerShell 5.1 no entiende `a");
+        assert!(line.contains("$([char]27)"));
+        assert!(line.contains("$([char]7)"));
+    }
+
+    #[test]
+    fn should_use_only_one_prompt_command_when_building_cmd_line() {
+        let line = integration_line(ShellKind::Cmd).unwrap();
+        assert!(line.starts_with("prompt "), "{line}");
+        assert!(!line.contains("echo"), "{line}");
+        assert!(line.contains("$E]777;tuki-ready$E\\"), "{line}");
     }
 
     #[test]
     fn should_expose_the_ready_marker_when_emitted_by_the_injected_line() {
         assert_eq!(READY_MARKER, b"\x1b]777;tuki-ready\x07");
+    }
+
+    #[test]
+    fn should_expose_the_st_ready_marker_when_cmd_emits_it() {
+        assert_eq!(READY_MARKER_ST, b"\x1b]777;tuki-ready\x1b\\");
     }
 }
