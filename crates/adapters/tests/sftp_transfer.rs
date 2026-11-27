@@ -64,13 +64,15 @@ async fn fs() -> (RusshTransport, Connected, RusshFileSystem) {
 }
 
 /// Registra cada llamada y cancela en la primera, para probar la cancelación entre bloques.
+type ProgressCalls = Arc<Mutex<Vec<(u64, Option<u64>)>>>;
+
 struct Progress {
-    calls: Arc<Mutex<Vec<(u64, Option<u64>)>>>,
+    calls: ProgressCalls,
     cancel: Option<CancelToken>,
 }
 
 impl Progress {
-    fn new() -> (Self, Arc<Mutex<Vec<(u64, Option<u64>)>>>) {
+    fn new() -> (Self, ProgressCalls) {
         let calls = Arc::new(Mutex::new(Vec::new()));
         (
             Self {
@@ -93,10 +95,10 @@ impl TransferProgress for Progress {
     fn progress(&self, transferred: u64, total: Option<u64>) {
         let mut calls = self.calls.lock().unwrap();
         calls.push((transferred, total));
-        if calls.len() == 1 {
-            if let Some(token) = &self.cancel {
-                token.cancel();
-            }
+        if calls.len() == 1
+            && let Some(token) = &self.cancel
+        {
+            token.cancel();
         }
     }
 }
