@@ -2,7 +2,6 @@
 
 use std::fmt;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -153,10 +152,6 @@ impl CommandError {
         Self::new("invalid_input", error)
     }
 
-    fn timeout() -> Self {
-        Self::new("timeout", "SSH connection timed out")
-    }
-
     fn from_connect(error: ConnectError) -> Self {
         let message = error.to_string();
         match error {
@@ -264,9 +259,9 @@ pub async fn connect(
             closed: on_closed,
         }),
     };
-    let outcome = tokio::time::timeout(Duration::from_secs(20), use_case.execute(request))
+    let outcome = use_case
+        .execute(request)
         .await
-        .map_err(|_| CommandError::timeout())?
         .map_err(CommandError::from_connect)?;
     Ok(outcome.into())
 }
@@ -469,7 +464,6 @@ mod tests {
         assert_eq!(kind(ConnectError::Key(KeyError::NotFound)), "io");
         assert_eq!(kind(ConnectError::Secret(SecretError::Io)), "io");
         assert_eq!(kind(ConnectError::HostKey(HostKeyError::Io)), "io");
-        assert_eq!(CommandError::timeout().kind, "timeout");
     }
 
     #[test]

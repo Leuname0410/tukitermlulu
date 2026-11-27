@@ -58,6 +58,7 @@ type SharedChannels = Arc<Mutex<HashMap<ChannelId, PtyChannel>>>;
 /// Estado interno compartido: todos los clones ven las mismas conexiones y canales.
 struct Inner {
     config: Arc<Config>,
+    connect_timeout: Duration,
     connections: Mutex<HashMap<ConnectionId, SharedConnection>>,
     channels: SharedChannels,
     next_id: AtomicU64,
@@ -71,8 +72,13 @@ pub struct RusshTransport {
 }
 
 impl RusshTransport {
-    /// Crea el transporte con keepalive de 30 s y tres reintentos.
+    /// Crea el transporte con 20 s de timeout de conexión y keepalive de 30 s.
     pub fn new() -> Self {
+        Self::with_connect_timeout(Duration::from_secs(20))
+    }
+
+    /// Crea el transporte con un timeout de handshake personalizado.
+    pub fn with_connect_timeout(connect_timeout: Duration) -> Self {
         let config = Config {
             keepalive_interval: Some(Duration::from_secs(30)),
             keepalive_max: 3,
@@ -82,6 +88,7 @@ impl RusshTransport {
         Self {
             inner: Arc::new(Inner {
                 config: Arc::new(config),
+                connect_timeout,
                 connections: Mutex::new(HashMap::new()),
                 channels: Arc::new(Mutex::new(HashMap::new())),
                 next_id: AtomicU64::new(1),
@@ -104,9 +111,13 @@ impl SshTransport for RusshTransport {
             fingerprint: Arc::clone(&observed),
         };
         let address = (host.hostname.as_str(), host.port.get());
-        let handle = russh::client::connect(Arc::clone(&self.inner.config), address, handler)
-            .await
-            .map_err(|_| TransportError::Connect)?;
+        let handle = tokio::time::timeout(
+            self.inner.connect_timeout,
+            russh::client::connect(Arc::clone(&self.inner.config), address, handler),
+        )
+        .await
+        .map_err(|_| TransportError::Connect)?
+        .map_err(|_| TransportError::Connect)?;
         let raw = observed
             .lock()
             .await
