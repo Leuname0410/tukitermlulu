@@ -8,6 +8,10 @@ default:
 dev:
     npm --prefix ui run tauri dev
 
+test-int:
+    docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
+    cargo test -p tuki-adapters --features integration -- --test-threads=1
+
 check:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
