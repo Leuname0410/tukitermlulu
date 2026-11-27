@@ -218,6 +218,13 @@ pub trait KeyLoader: Send + Sync {
     ) -> impl Future<Output = Result<PrivateKey, KeyError>> + Send;
 }
 
+/// Almacén de archivos de llave en el directorio privado de la app.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait KeyFileStore: Send + Sync {
+    /// Copia la llave al directorio privado de la app y devuelve la nueva referencia.
+    fn import(&self, source: &KeyRef) -> impl Future<Output = Result<KeyRef, KeyError>> + Send;
+}
+
 /// Almacén de secretos de sesión; no expone operaciones para passphrases de llave (ADR-004).
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait SecretStore: Send + Sync {

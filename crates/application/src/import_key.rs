@@ -1,3 +1,59 @@
+//! Caso de uso para validar e importar llaves privadas.
+
+use tuki_core::auth::KeyRef;
+use tuki_core::port_errors::KeyError;
+use tuki_core::ports::{KeyFileStore, KeyLoader, SecretString};
+
+/// Entrada del caso de uso de importación.
+pub struct ImportKeyRequest<'a> {
+    pub source: KeyRef,
+    pub copy_to_app_dir: bool,
+    pub passphrase: Option<&'a SecretString>,
+}
+
+/// Resultado de la importación.
+#[derive(Debug)]
+pub struct ImportedKey {
+    pub key: KeyRef,
+    pub has_passphrase: bool,
+}
+
+/// Valida una llave y, si se pide, la copia al directorio privado de la app.
+pub struct ImportKey<L: KeyLoader, S: KeyFileStore> {
+    loader: L,
+    store: S,
+}
+
+impl<L: KeyLoader, S: KeyFileStore> ImportKey<L, S> {
+    /// Crea el caso de uso con los puertos que necesita.
+    pub fn new(loader: L, store: S) -> Self {
+        Self { loader, store }
+    }
+
+    /// Importa la llave indicada por la petición.
+    pub async fn execute(&self, request: ImportKeyRequest<'_>) -> Result<ImportedKey, KeyError> {
+        let has_passphrase = match self.loader.load(&request.source, request.passphrase).await {
+            Ok(loaded_key) => {
+                drop(loaded_key);
+                request.passphrase.is_some()
+            }
+            Err(KeyError::PassphraseRequired) if request.passphrase.is_none() => true,
+            Err(error) => return Err(error),
+        };
+
+        let key = if request.copy_to_app_dir {
+            self.store.import(&request.source).await?
+        } else {
+            request.source
+        };
+
+        Ok(ImportedKey {
+            key,
+            has_passphrase,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::future::Future;
@@ -5,9 +61,7 @@ mod tests {
 
     use tuki_core::auth::KeyRef;
     use tuki_core::port_errors::KeyError;
-    use tuki_core::ports::{
-        KeyFileStore, MockKeyFileStore, MockKeyLoader, PrivateKey, SecretString,
-    };
+    use tuki_core::ports::{MockKeyFileStore, MockKeyLoader, PrivateKey, SecretString};
 
     use super::{ImportKey, ImportKeyRequest};
 
@@ -130,9 +184,10 @@ mod tests {
             KeyError::NotFound,
         ] {
             let mut loader = MockKeyLoader::new();
-            loader.expect_load().once().returning(move |_, _| {
-                Box::pin(async move { Err(error) })
-            });
+            loader
+                .expect_load()
+                .once()
+                .returning(move |_, _| Box::pin(async move { Err(error) }));
             let use_case = ImportKey::new(loader, no_import_store());
 
             let result = block_on(use_case.execute(ImportKeyRequest {
