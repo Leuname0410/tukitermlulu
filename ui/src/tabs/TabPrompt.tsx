@@ -1,76 +1,106 @@
-import { useState, type JSX } from "react";
+import type { JSX } from "react";
+import { HostKeyDialog } from "../dialogs/HostKeyDialog";
+import { SecretDialog } from "../dialogs/SecretDialog";
 import type { TabController } from "./tabController";
 import type { Tab } from "./tabState";
 
 interface TabPromptProps {
   tab: Tab;
   controller: TabController;
+  onPromptCancelled: (id: number) => void;
+  onUpdateSavedPassword: (sessionId: number, value: string) => void;
 }
 
 const DEFAULT_SIZE = { rows: 24, cols: 80 };
 
-export function TabPrompt({ tab, controller }: TabPromptProps): JSX.Element {
-  const [secret, setSecret] = useState("");
-
+export function TabPrompt({
+  tab,
+  controller,
+  onPromptCancelled,
+  onUpdateSavedPassword,
+}: TabPromptProps): JSX.Element {
   const status = tab.status;
+  const sessionId = tab.target.sessionId;
+
+  function sendPassword(value: string, remember: boolean): void {
+    void (async () => {
+      await controller.connect({ password: value }, DEFAULT_SIZE);
+      if (remember && sessionId !== undefined) {
+        onUpdateSavedPassword(sessionId, value);
+      }
+    })();
+  }
+
+  function cancelSecret(): void {
+    onPromptCancelled(tab.id);
+  }
+
+  function closeHostDialog(): void {
+    void controller.close();
+  }
+
   if (status.kind === "needs_password") {
     return (
-      <div>
-        <label>
-          Contraseña
-          <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} />
-        </label>
-        <button
-          type="button"
-          onClick={() => {
-            const value = secret;
-            setSecret("");
-            void controller.connect({ password: value }, DEFAULT_SIZE);
-          }}
-        >
-          Conectar
-        </button>
-      </div>
+      <SecretDialog
+        kind="password"
+        offerRemember={sessionId !== undefined}
+        onSubmit={sendPassword}
+        onCancel={cancelSecret}
+      />
     );
   }
 
   if (status.kind === "needs_passphrase") {
     return (
-      <div>
-        <label>
-          Passphrase
-          <input type="password" value={secret} onChange={(e) => setSecret(e.target.value)} />
-        </label>
-        <button
-          type="button"
-          onClick={() => {
-            const value = secret;
-            setSecret("");
-            void controller.connect({ passphrase: value }, DEFAULT_SIZE);
-          }}
-        >
-          Conectar
-        </button>
-      </div>
+      <SecretDialog
+        kind="passphrase"
+        offerRemember={false}
+        onSubmit={(value) => {
+          void controller.connect({ passphrase: value }, DEFAULT_SIZE);
+        }}
+        onCancel={cancelSecret}
+      />
     );
   }
 
   if (status.kind === "needs_host_key_approval") {
     return (
-      <div>
-        <p>{status.fingerprint}</p>
-        <button
-          type="button"
-          onClick={() => {
-            void controller.connect({ approvedFingerprint: status.fingerprint }, DEFAULT_SIZE);
-          }}
-        >
-          Aceptar huella
-        </button>
-        <button type="button" onClick={() => void controller.close()}>
-          Cancelar
-        </button>
-      </div>
+      <HostKeyDialog
+        host={tab.target.host}
+        fingerprint={status.fingerprint}
+        changed={false}
+        onAccept={() => {
+          void controller.connect({ approvedFingerprint: status.fingerprint }, DEFAULT_SIZE);
+        }}
+        onCancel={closeHostDialog}
+      />
+    );
+  }
+
+  if (status.kind === "error" && status.error.kind === "host_key_changed") {
+    return (
+      <HostKeyDialog
+        host={tab.target.host}
+        fingerprint={status.error.fingerprint ?? ""}
+        changed
+        onAccept={() => undefined}
+        onCancel={closeHostDialog}
+      />
+    );
+  }
+
+  if (
+    status.kind === "error" &&
+    status.error.kind === "auth_rejected" &&
+    sessionId !== undefined &&
+    tab.target.auth.kind === "password" &&
+    tab.target.auth.remember
+  ) {
+    return (
+      <>
+        <p>{status.error.message}</p>
+        <SecretDialog kind="password" offerRemember onSubmit={sendPassword} onCancel={cancelSecret} />
+      </>
     );
   }
 
@@ -87,15 +117,12 @@ export function TabPrompt({ tab, controller }: TabPromptProps): JSX.Element {
   }
 
   if (status.kind === "error") {
-    const canRetry = status.error.kind !== "host_key_changed";
     return (
       <div>
         <p>{status.error.message}</p>
-        {canRetry && (
-          <button type="button" onClick={() => void controller.reconnect(DEFAULT_SIZE)}>
-            Reintentar
-          </button>
-        )}
+        <button type="button" onClick={() => void controller.reconnect(DEFAULT_SIZE)}>
+          Reintentar
+        </button>
       </div>
     );
   }

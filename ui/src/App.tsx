@@ -39,6 +39,8 @@ export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<readonly SessionDto[]>([]);
   const [folders, setFolders] = useState<readonly FolderDto[]>([]);
   const [formState, setFormState] = useState<FormState | null>(null);
+  const pendingPasswordUpdates = useRef<Map<number, string>>(new Map());
+  const [pendingUpdateVersion, setPendingUpdateVersion] = useState(0);
 
   const reload = useCallback(async (): Promise<void> => {
     try {
@@ -68,6 +70,52 @@ export default function App(): JSX.Element {
       setControllers(new Map(controllersRef.current));
     }
   }, [tabs]);
+
+  const handleUpdateSavedPassword = useCallback((sessionId: number, value: string): void => {
+    pendingPasswordUpdates.current.set(sessionId, value);
+    setPendingUpdateVersion((version) => version + 1);
+  }, []);
+
+  function handlePromptCancelled(id: number): void {
+    dispatch({
+      type: "failed",
+      id,
+      error: { kind: "auth_cancelled", message: "Autenticación cancelada" },
+    });
+  }
+
+  useEffect(() => {
+    // Solo se guarda la contraseña si la conexión con ella terminó conectada.
+    for (const [sessionId, value] of pendingPasswordUpdates.current) {
+      const tab = tabs.find((item) => item.target.sessionId === sessionId);
+      if (tab === undefined || tab.status.kind === "connecting") {
+        continue;
+      }
+      pendingPasswordUpdates.current.delete(sessionId);
+      if (tab.status.kind !== "connected") {
+        continue;
+      }
+      const session = sessions.find((item) => item.id === sessionId);
+      if (session === undefined) {
+        continue;
+      }
+      const input: SessionInput = {
+        name: session.name,
+        host: session.host,
+        port: session.port,
+        username: session.username,
+        auth: session.auth,
+        folder: session.folder,
+      };
+      void apiUpdateSession(sessionId, input, { kind: "set", value })
+        .then(() => {
+          void reload();
+        })
+        .catch(() => {
+          // Si falla el guardado se conserva la contraseña anterior.
+        });
+    }
+  }, [tabs, sessions, pendingUpdateVersion, reload]);
 
   function handleConnect(target: ConnectTarget): void {
     const id = nextIdRef.current;
@@ -182,6 +230,8 @@ export default function App(): JSX.Element {
         activeTabId={effectiveActive}
         onSelect={setActiveTabId}
         controllers={controllers}
+        onPromptCancelled={handlePromptCancelled}
+        onUpdateSavedPassword={handleUpdateSavedPassword}
       />
     </main>
   );

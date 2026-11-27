@@ -21,6 +21,12 @@ vi.mock("../lib/api", async (importOriginal) => {
   };
 });
 
+vi.mock("../terminal/TerminalView", () => ({
+  TerminalView: (props: { channelId: number }) => (
+    <div data-testid={`terminal-${props.channelId}`}>terminal:{props.channelId}</div>
+  ),
+}));
+
 const saved: SessionDto = {
   id: 7,
   name: "Servidor",
@@ -80,7 +86,7 @@ describe("SecretDialog", () => {
     const onCancel = vi.fn();
     render(<SecretDialog kind="password" offerRemember={false} onSubmit={vi.fn()} onCancel={onCancel} />);
 
-    cancelDialog();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });

@@ -9,6 +9,8 @@ interface TabsViewProps {
   activeTabId: number | null;
   onSelect: (id: number) => void;
   controllers: ReadonlyMap<number, TabController>;
+  onPromptCancelled: (id: number) => void;
+  onUpdateSavedPassword: (sessionId: number, value: string) => void;
 }
 
 function statusLabel(tab: Tab): string {
@@ -28,7 +30,14 @@ function statusLabel(tab: Tab): string {
   }
 }
 
-export function TabsView({ tabs, activeTabId, onSelect, controllers }: TabsViewProps): JSX.Element {
+export function TabsView({
+  tabs,
+  activeTabId,
+  onSelect,
+  controllers,
+  onPromptCancelled,
+  onUpdateSavedPassword,
+}: TabsViewProps): JSX.Element {
   return (
     <div>
       <div role="tablist" aria-label="Pestañas">
@@ -75,7 +84,12 @@ export function TabsView({ tabs, activeTabId, onSelect, controllers }: TabsViewP
             {tab.status.kind === "connected" && controller ? (
               <TerminalView channelId={tab.status.channelId} source={controller} />
             ) : controller ? (
-              <TabPrompt tab={tab} controller={controller} />
+              <TabPrompt
+                tab={tab}
+                controller={controller}
+                onPromptCancelled={onPromptCancelled}
+                onUpdateSavedPassword={onUpdateSavedPassword}
+              />
             ) : null}
           </div>
         );
