@@ -63,8 +63,9 @@ impl Default for HookTiming {
     }
 }
 
-/// Sonda, silencio, ocultación y escritura; devuelve la salida sin marcador.
-/// Los fallos SSH se ignoran: la terminal sigue funcionando sin seguimiento.
+/// Sonda, silencio, ocultación y escritura. Los fallos SSH se ignoran: la terminal
+/// sigue funcionando sin seguimiento. `flush` se llama con el lock del filtro tomado
+/// para que lo guardado no se intercale con salida nueva (orden fijo: filtro -> output).
 pub(crate) async fn integrate<T: SshTransport>(
     transport: Arc<T>,
     connection: ConnectionId,
@@ -72,12 +73,13 @@ pub(crate) async fn integrate<T: SshTransport>(
     clock: QuietClock,
     filter: Arc<Mutex<EchoFilter>>,
     timing: HookTiming,
-) -> Vec<u8> {
+    flush: impl FnOnce(Vec<u8>),
+) {
     let Ok(output) = transport.exec(connection, PROBE_COMMAND).await else {
-        return Vec::new();
+        return;
     };
     let Some(line) = integration_line(classify(&output)) else {
-        return Vec::new();
+        return;
     };
     let started = Instant::now();
     loop {
@@ -94,10 +96,13 @@ pub(crate) async fn integrate<T: SshTransport>(
         .activate();
     let _ = transport.write(channel, line.as_bytes()).await;
     tokio::time::sleep(timing.expire).await;
-    filter
+    let mut guard = filter
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .expire()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let pending = guard.expire();
+    if !pending.is_empty() {
+        flush(pending);
+    }
 }
 
 #[cfg(test)]

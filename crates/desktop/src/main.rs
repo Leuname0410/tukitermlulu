@@ -2,6 +2,7 @@
 
 mod sessions;
 mod sftp;
+mod shell_hook;
 mod terminal;
 mod transfers;
 

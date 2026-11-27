@@ -1,8 +1,5 @@
 //! Puente IPC de la terminal: DTOs, comandos y canal binario de salida.
 
-#[path = "shell_hook.rs"]
-mod shell_hook;
-
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -38,7 +35,7 @@ use tuki_core::remote_path::RemotePath;
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
-use self::shell_hook::{HookTiming, QuietClock, integrate};
+use crate::shell_hook::{HookTiming, QuietClock, integrate};
 use crate::transfers::emit_transfers;
 
 /// Estado compartido por los comandos: transporte, known_hosts, passphrases y repositorio.
@@ -184,17 +181,20 @@ impl ChannelSink {
 impl PtySink for ChannelSink {
     fn data(&mut self, bytes: &[u8]) {
         self.clock.mark(Instant::now());
-        let visible = self
-            .filter
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(bytes);
-        if !visible.is_empty() {
-            let _ = self
-                .output
+        {
+            // Mismo orden de locks que la integración: filtro -> output.
+            let mut filter = self
+                .filter
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .send(InvokeResponseBody::Raw(visible));
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let visible = filter.push(bytes);
+            if !visible.is_empty() {
+                let _ = self
+                    .output
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .send(InvokeResponseBody::Raw(visible));
+            }
         }
         if let Some(path) = self
             .tracker
@@ -431,21 +431,21 @@ pub async fn connect(
         let task_filter = Arc::clone(&filter);
         let task_clock = clock.clone();
         tauri::async_runtime::spawn(async move {
-            let pending = integrate(
+            integrate(
                 transport,
                 ConnectionId::new(connection_id),
                 ChannelId::new(channel_id),
                 task_clock,
                 task_filter,
                 HookTiming::default(),
+                |pending| {
+                    let _ = task_output
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .send(InvokeResponseBody::Raw(pending));
+                },
             )
             .await;
-            if !pending.is_empty() {
-                let _ = task_output
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .send(InvokeResponseBody::Raw(pending));
-            }
         });
     }
     Ok(response)
@@ -680,7 +680,7 @@ mod tests {
             })))
         };
         let clock = QuietClock::new(Instant::now());
-        let sink = ChannelSink::new(
+        let mut sink = ChannelSink::new(
             Arc::clone(&output),
             Channel::new(move |_body| Ok(())),
             noop_cwd(),
@@ -738,7 +738,10 @@ mod tests {
 
         let bodies = output_bytes.lock().unwrap();
         let visible: Vec<&[u8]> = bodies.iter().map(Vec::as_slice).collect();
-        assert_eq!(visible, vec![b"eco oculto".as_slice(), b"prompt$ ".as_slice()]);
+        assert_eq!(
+            visible,
+            vec![b"eco oculto".as_slice(), b"prompt$ ".as_slice()]
+        );
     }
 
     #[test]
