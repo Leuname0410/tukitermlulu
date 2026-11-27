@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type JSX, type KeyboardEvent } from "react";
-import type { EntryDto } from "../lib/api";
-import { isCommandError, sftpHome, sftpList } from "../lib/api";
+import type { EntryDto, TransferDto } from "../lib/api";
+import { isCommandError, onTransfers, sftpHome, sftpList } from "../lib/api";
+import { EntryMenu } from "./EntryMenu";
 import { formatSize, joinPath, parentPath, sortEntries, type SortKey } from "./sidebarModel";
+import { TransferList } from "./TransferList";
 import { useFileDrop } from "./useFileDrop";
 
 export interface SftpSidebarProps {
@@ -13,6 +15,12 @@ export interface SftpSidebarProps {
 interface SortState {
   key: SortKey;
   ascending: boolean;
+}
+
+interface MenuState {
+  x: number;
+  y: number;
+  entry?: EntryDto;
 }
 
 function errorText(cause: unknown): string {
@@ -34,6 +42,8 @@ export function SftpSidebar({
   const [sort, setSort] = useState<SortState>({ key: "name", ascending: true });
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [menu, setMenu] = useState<MenuState | null>(null);
+  const [transfers, setTransfers] = useState<readonly TransferDto[]>([]);
   const requestRef = useRef(0);
   const pathChangeRef = useRef(onPathChange);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -71,6 +81,7 @@ export function SftpSidebar({
       const token = ++requestRef.current;
       setBusy(true);
       setError(null);
+      setMenu(null);
       void list(target, token);
     },
     [list],
@@ -83,6 +94,29 @@ export function SftpSidebar({
     onError: setError,
     onRefresh: () => navigate(currentPath),
   });
+
+  useEffect(() => {
+    let active = true;
+    let stop: (() => void) | undefined;
+    void (async () => {
+      try {
+        const unsubscribe = await onTransfers((jobs) => {
+          if (active) setTransfers(jobs);
+        });
+        if (active) {
+          stop = unsubscribe;
+        } else {
+          unsubscribe();
+        }
+      } catch {
+        // Sin webview Tauri no hay eventos de transferencia.
+      }
+    })();
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, []);
 
   useEffect(() => {
     const token = ++requestRef.current;
@@ -139,6 +173,10 @@ export function SftpSidebar({
       aria-busy={busy}
       data-drop-active={dropActive ? "true" : "false"}
       style={{ width: 280 }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        setMenu({ x: event.clientX, y: event.clientY });
+      }}
     >
       {dropActive && <p role="status">Soltar para subir</p>}
       <div>
@@ -191,6 +229,11 @@ export function SftpSidebar({
               tabIndex={0}
               onDoubleClick={() => openEntry(item)}
               onKeyDown={(event) => onRowKeyDown(event, item)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setMenu({ x: event.clientX, y: event.clientY, entry: item });
+              }}
             >
               <td>
                 {item.isDir ? "📁" : "📄"} <span>{item.name}</span>
@@ -200,6 +243,19 @@ export function SftpSidebar({
           ))}
         </tbody>
       </table>
+      <TransferList transfers={transfers} onError={setError} />
+      {menu !== null && (
+        <EntryMenu
+          connectionId={connectionId}
+          directory={currentPath}
+          entry={menu.entry}
+          x={menu.x}
+          y={menu.y}
+          onClose={() => setMenu(null)}
+          onRefresh={() => navigate(currentPath)}
+          onError={setError}
+        />
+      )}
     </aside>
   );
 }
