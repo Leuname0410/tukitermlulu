@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { SplitPane } from "../layout/SplitPane";
 import { SftpSidebar } from "../sftp/SftpSidebar";
 import { TerminalView } from "../terminal/TerminalView";
 import type { TabController } from "./tabController";
@@ -83,12 +84,15 @@ export function TabsView({
             hidden={!selected}
           >
             {tab.status.kind === "connected" && controller ? (
-              <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)" }}>
-                <SftpSidebar connectionId={tab.status.connectionId} />
-                <section aria-label="Terminal">
-                  <TerminalView channelId={tab.status.channelId} source={controller} />
-                </section>
-              </div>
+              <SplitPane
+                sessionId={tab.target.sessionId}
+                left={<SftpSidebar connectionId={tab.status.connectionId} />}
+                right={
+                  <section aria-label="Terminal">
+                    <TerminalView channelId={tab.status.channelId} source={controller} />
+                  </section>
+                }
+              />
             ) : controller ? (
               <TabPrompt
                 tab={tab}
