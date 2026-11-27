@@ -40,6 +40,7 @@ export function SessionForm(props: SessionFormProps): JSX.Element {
     initialAuth?.kind === "password" ? initialAuth.remember : false,
   );
   const [password, setPassword] = useState("");
+  const [shellIntegration, setShellIntegration] = useState(initial?.shellIntegration ?? true);
   const passwordSaved = initial?.passwordSaved ?? false;
   const [forgetSaved, setForgetSaved] = useState(false);
   const [error, setError] = useState<CommandError | null>(null);
@@ -66,6 +67,7 @@ export function SessionForm(props: SessionFormProps): JSX.Element {
           ? { kind: "password", remember }
           : { kind: "key", path: keyPath.trim(), hasPassphrase },
       folder: folder === "" ? null : Number(folder),
+      shellIntegration,
     };
     let passwordInput: PasswordInput = { kind: "keep" };
     if (authKind === "password") {
@@ -122,6 +124,14 @@ export function SessionForm(props: SessionFormProps): JSX.Element {
             </option>
           ))}
         </select>
+      </label>
+      <label>
+        <input
+          type="checkbox"
+          checked={shellIntegration}
+          onChange={(event) => setShellIntegration(event.target.checked)}
+        />
+        Seguir el directorio de la terminal (integración de shell)
       </label>
       <label>
         Método

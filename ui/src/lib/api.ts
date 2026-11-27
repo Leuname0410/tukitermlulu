@@ -36,6 +36,7 @@ export interface SessionInput {
   username: string;
   auth: AuthDto;
   folder?: number | null;
+  shellIntegration?: boolean;
 }
 
 export type PasswordInput =
@@ -52,6 +53,7 @@ export interface SessionDto {
   auth: AuthDto;
   folder: number | null;
   passwordSaved: boolean;
+  shellIntegration: boolean;
 }
 
 export interface FolderDto {
@@ -188,6 +190,7 @@ function parseSessionDto(value: unknown): SessionDto {
     auth: parseAuth(session.auth),
     folder: readOptionalNumber(session.folder, "folder"),
     passwordSaved: readBoolean(session.passwordSaved, "passwordSaved"),
+    shellIntegration: readBoolean(session.shellIntegration, "shellIntegration"),
   };
 }
 

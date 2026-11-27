@@ -27,6 +27,7 @@ pub struct SessionDto {
     auth: AuthDto,
     folder: Option<u64>,
     password_saved: bool,
+    shell_integration: bool,
 }
 
 /// Método de autenticación sin secretos.
@@ -53,6 +54,9 @@ pub struct SessionInput {
     username: String,
     auth: AuthDto,
     folder: Option<u64>,
+    /// Ausente en clientes antiguos: en ese caso se activa la integración.
+    #[serde(default)]
+    shell_integration: Option<bool>,
 }
 
 /// Cambio de contraseña solicitado al actualizar una sesión.
@@ -100,14 +104,15 @@ fn to_session(input: SessionInput, id: u64) -> Result<Session, CommandError> {
             has_passphrase: *has_passphrase,
         },
     };
-    Session::new(
+    Ok(Session::new(
         SessionId::new(id),
         &input.name,
         host,
         auth,
         input.folder.map(FolderId::new),
     )
-    .map_err(from_domain)
+    .map_err(from_domain)?
+    .with_shell_integration(input.shell_integration.unwrap_or(true)))
 }
 
 /// Proyecta la sesión al DTO; `password_saved` ya es un booleano sin el secreto.
@@ -133,6 +138,7 @@ fn to_dto(session: &Session, password_saved: bool) -> SessionDto {
         auth,
         folder: session.folder.map(FolderId::get),
         password_saved,
+        shell_integration: session.shell_integration,
     }
 }
 
@@ -191,6 +197,7 @@ async fn create<R: SessionRepository, S: SecretStore>(
         host: session.host.clone(),
         auth: session.auth.clone(),
         folder: session.folder,
+        shell_integration: session.shell_integration,
     };
     let secret = password
         .as_ref()
@@ -529,8 +536,8 @@ mod tests {
 
     #[test]
     fn should_expose_shell_integration_in_camel_case_when_mapping_dto() {
-        let session = session(7, AuthMethod::Password { remember: false })
-            .with_shell_integration(false);
+        let session =
+            session(7, AuthMethod::Password { remember: false }).with_shell_integration(false);
         let dto = to_dto(&session, false);
         assert!(!dto.shell_integration);
         assert_eq!(
@@ -546,7 +553,8 @@ mod tests {
         let mut disabled = input();
         disabled.shell_integration = Some(false);
 
-        let created = block_on(create(repository.clone(), secrets.clone(), disabled, None)).unwrap();
+        let created =
+            block_on(create(repository.clone(), secrets.clone(), disabled, None)).unwrap();
         assert!(!created.shell_integration);
         let listed = block_on(list(repository, secrets)).unwrap();
         assert_eq!(listed.len(), 1);

@@ -42,4 +42,6 @@ pub struct SessionDraft {
     pub host: Host,
     pub auth: AuthMethod,
     pub folder: Option<FolderId>,
+    /// Integración de la terminal con el directorio de la sesión.
+    pub shell_integration: bool,
 }

@@ -13,7 +13,8 @@ use tuki_core::ports::SessionRepository;
 use tuki_core::session::{Folder, FolderId, Session, SessionId};
 
 /// Esquema versionado: el índice del array es `PRAGMA user_version`.
-const MIGRATIONS: &[&str] = &["CREATE TABLE folders (
+const MIGRATIONS: &[&str] = &[
+    "CREATE TABLE folders (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
         parent INTEGER NULL REFERENCES folders(id) ON DELETE CASCADE
@@ -29,13 +30,15 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE folders (
         key_path TEXT NULL,
         key_has_passphrase INTEGER NOT NULL DEFAULT 0,
         folder INTEGER NULL REFERENCES folders(id) ON DELETE SET NULL
-     );"];
+     );",
+    "ALTER TABLE sessions ADD COLUMN shell_integration INTEGER NOT NULL DEFAULT 1;",
+];
 
 /// Columnas de una sesión, en el orden esperado por `session_from_row`.
-const SESSION_COLUMNS: &str = "id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder";
+const SESSION_COLUMNS: &str = "id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder, shell_integration";
 
 /// Inserción o actualización de una sesión; nunca incluye secretos.
-const UPSERT_SESSION: &str = "INSERT INTO sessions (id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(id) DO UPDATE SET name=excluded.name, hostname=excluded.hostname, port=excluded.port, username=excluded.username, auth_kind=excluded.auth_kind, remember_password=excluded.remember_password, key_path=excluded.key_path, key_has_passphrase=excluded.key_has_passphrase, folder=excluded.folder";
+const UPSERT_SESSION: &str = "INSERT INTO sessions (id, name, hostname, port, username, auth_kind, remember_password, key_path, key_has_passphrase, folder, shell_integration) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) ON CONFLICT(id) DO UPDATE SET name=excluded.name, hostname=excluded.hostname, port=excluded.port, username=excluded.username, auth_kind=excluded.auth_kind, remember_password=excluded.remember_password, key_path=excluded.key_path, key_has_passphrase=excluded.key_has_passphrase, folder=excluded.folder, shell_integration=excluded.shell_integration";
 
 /// Inserción o actualización de una carpeta.
 const UPSERT_FOLDER: &str = "INSERT INTO folders (id, name, parent) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent=excluded.parent";
@@ -137,6 +140,7 @@ impl SessionRepository for SqliteSessionRepository {
                     key_path,
                     has_passphrase,
                     folder,
+                    i64::from(session.shell_integration),
                 ],
             )
             .map_err(map_db)?;
@@ -294,6 +298,7 @@ fn session_from_row(row: &Row<'_>) -> Result<Session, RepositoryError> {
     let key_path: Option<String> = row.get(7).map_err(map_db)?;
     let has_passphrase: i64 = row.get(8).map_err(map_db)?;
     let folder: Option<i64> = row.get(9).map_err(map_db)?;
+    let shell_integration: i64 = row.get(10).map_err(map_db)?;
     let auth = match kind.as_str() {
         "password" => AuthMethod::Password {
             remember: as_bool(remember),
@@ -313,7 +318,9 @@ fn session_from_row(row: &Row<'_>) -> Result<Session, RepositoryError> {
         port,
         username,
     };
-    Session::new(id, &name, host, auth, folder).map_err(|_| RepositoryError::Io)
+    Session::new(id, &name, host, auth, folder)
+        .map(|session| session.with_shell_integration(as_bool(shell_integration)))
+        .map_err(|_| RepositoryError::Io)
 }
 
 #[cfg(test)]
@@ -631,7 +638,8 @@ mod tests {
                 [],
             )
             .expect("sesión v1");
-            conn.pragma_update(None, "user_version", 1_u32).expect("versión v1");
+            conn.pragma_update(None, "user_version", 1_u32)
+                .expect("versión v1");
         }
 
         let repo = SqliteSessionRepository::open(&path).expect("abrir v2");

@@ -36,6 +36,7 @@ const saved: SessionDto = {
   auth: { kind: "password", remember: true },
   folder: null,
   passwordSaved: true,
+  shellIntegration: true,
 };
 
 function cancelDialog(): void {

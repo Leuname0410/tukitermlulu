@@ -31,7 +31,8 @@ impl<R: SessionRepository> DuplicateSession<R> {
             existing.host,
             existing.auth,
             existing.folder,
-        )?;
+        )?
+        .with_shell_integration(existing.shell_integration);
         self.repo.save_session(&copy).await?;
         Ok(copy)
     }
@@ -136,9 +137,9 @@ mod tests {
     #[test]
     fn should_copy_shell_integration_when_duplicating_session() {
         let mut repo = MockSessionRepository::new();
-        repo.expect_get_session().once().returning(|_| {
-            Box::pin(async { Ok(Some(session(7).with_shell_integration(false))) })
-        });
+        repo.expect_get_session()
+            .once()
+            .returning(|_| Box::pin(async { Ok(Some(session(7).with_shell_integration(false))) }));
         repo.expect_next_session_id()
             .once()
             .returning(|| Box::pin(async { Ok(SessionId::new(8)) }));

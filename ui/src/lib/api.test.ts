@@ -124,7 +124,13 @@ const sessionRaw = {
   shellIntegration: true,
 };
 
-const sessionDto: SessionDto = { ...sessionInput, folder: null, id: 1, passwordSaved: true };
+const sessionDto: SessionDto = {
+  ...sessionInput,
+  folder: null,
+  id: 1,
+  passwordSaved: true,
+  shellIntegration: true,
+};
 
 const folderRaw = { id: 2, name: "producción", parent: null };
 const folderDto: FolderDto = folderRaw;

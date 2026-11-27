@@ -66,6 +66,8 @@ pub struct Session {
     pub host: Host,
     pub auth: AuthMethod,
     pub folder: Option<FolderId>,
+    /// Integración de la terminal con el directorio de la sesión, activada por defecto.
+    pub shell_integration: bool,
 }
 
 impl Session {
@@ -87,7 +89,16 @@ impl Session {
             host,
             auth,
             folder,
+            shell_integration: true,
         })
+    }
+
+    /// Devuelve una sesión nueva con el flag de integración indicado.
+    pub fn with_shell_integration(&self, shell_integration: bool) -> Self {
+        Self {
+            shell_integration,
+            ..self.clone()
+        }
     }
 
     pub fn with_host(&self, host: Host) -> Self {

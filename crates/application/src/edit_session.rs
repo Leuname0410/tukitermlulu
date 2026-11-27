@@ -32,7 +32,8 @@ impl<R: SessionRepository, S: SecretStore> CreateSession<R, S> {
             draft.host,
             draft.auth.clone(),
             draft.folder,
-        )?;
+        )?
+        .with_shell_integration(draft.shell_integration);
         self.repo.save_session(&session).await?;
 
         if matches!(draft.auth, AuthMethod::Password { remember: true })
