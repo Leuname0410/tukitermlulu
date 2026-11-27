@@ -1,5 +1,5 @@
 import "@xterm/xterm/css/xterm.css";
-import { useRef, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { useTerminal, type UseTerminalOptions } from "./useTerminal";
 
 interface MenuPosition {
@@ -13,6 +13,26 @@ export function TerminalView(props: UseTerminalOptions): JSX.Element {
   const { copySelection, pasteClipboard } = useTerminal(containerRef, props);
   const [menu, setMenu] = useState<MenuPosition | null>(null);
 
+  useEffect(() => {
+    if (menu === null) {
+      return;
+    }
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") {
+        setMenu(null);
+      }
+    };
+    const closeOnOutsideClick = (): void => {
+      setMenu(null);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("click", closeOnOutsideClick);
+    return () => {
+      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("click", closeOnOutsideClick);
+    };
+  }, [menu]);
+
   return (
     <div
       role="region"
@@ -24,9 +44,10 @@ export function TerminalView(props: UseTerminalOptions): JSX.Element {
     >
       <div ref={containerRef} className="terminal-view__xterm" />
       {menu !== null && (
-        <div role="menu" style={{ left: menu.x, top: menu.y }}>
+        <div role="menu" style={{ position: "fixed", left: menu.x, top: menu.y }}>
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               void copySelection();
               setMenu(null);
@@ -36,6 +57,7 @@ export function TerminalView(props: UseTerminalOptions): JSX.Element {
           </button>
           <button
             type="button"
+            role="menuitem"
             onClick={() => {
               void pasteClipboard();
               setMenu(null);

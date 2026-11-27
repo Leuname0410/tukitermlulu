@@ -103,10 +103,13 @@ export function useTerminal(
     terminal.attachCustomKeyEventHandler((event) => {
       const action = clipboardAction(event, platform);
       if (action === "copy") {
+        // Evita que el navegador maneje el atajo además del hook (doble pegado/copia).
+        event.preventDefault();
         void copySelection();
         return false;
       }
       if (action === "paste") {
+        event.preventDefault();
         void pasteClipboard();
         return false;
       }
