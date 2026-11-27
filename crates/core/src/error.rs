@@ -21,6 +21,8 @@ pub enum DomainError {
     EmptyName,
     #[error("a folder cannot be its own parent")]
     FolderCycle,
+    #[error("PTY size dimensions must be greater than zero")]
+    InvalidPtySize,
 }
 
 #[cfg(test)]

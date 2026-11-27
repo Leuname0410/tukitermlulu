@@ -5,6 +5,7 @@ use std::future::Future;
 use zeroize::Zeroizing;
 
 use crate::auth::KeyRef;
+use crate::error::DomainError;
 use crate::host::Host;
 use crate::port_errors::{
     FsError, HostKeyError, KeyError, RepositoryError, SecretError, TransportError,
@@ -47,6 +48,16 @@ impl ChannelId {
 pub struct PtySize {
     pub rows: u16,
     pub cols: u16,
+}
+
+impl PtySize {
+    /// Crea un tamaño rechazando dimensiones cero.
+    pub fn new(rows: u16, cols: u16) -> Result<Self, DomainError> {
+        if rows == 0 || cols == 0 {
+            return Err(DomainError::InvalidPtySize);
+        }
+        Ok(Self { rows, cols })
+    }
 }
 
 /// Secreto de texto retenido solo en memoria.
@@ -144,6 +155,13 @@ impl HostKeyFingerprint {
     }
 }
 
+/// Resultado del handshake: la conexión existe pero aún NO está autenticada.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connected {
+    pub id: ConnectionId,
+    pub fingerprint: HostKeyFingerprint,
+}
+
 /// Resultado de comprobar la llave del host contra la lista de confianza.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostKeyStatus {
@@ -152,13 +170,20 @@ pub enum HostKeyStatus {
     Changed,
 }
 
+/// Receptor de la salida del PTY. Se invoca desde el adaptador; no debe bloquear.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait PtySink: Send + 'static {
+    fn data(&mut self, bytes: &[u8]);
+    fn closed(&mut self, exit_status: Option<u32>);
+}
+
 /// Conexión SSH y canales PTY.
 #[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
 pub trait SshTransport: Send + Sync {
     fn connect(
         &self,
         host: &Host,
-    ) -> impl Future<Output = Result<ConnectionId, TransportError>> + Send;
+    ) -> impl Future<Output = Result<Connected, TransportError>> + Send;
     fn authenticate(
         &self,
         conn: ConnectionId,
@@ -168,7 +193,13 @@ pub trait SshTransport: Send + Sync {
         &self,
         conn: ConnectionId,
         size: PtySize,
+        sink: Box<dyn PtySink>,
     ) -> impl Future<Output = Result<ChannelId, TransportError>> + Send;
+    fn write(
+        &self,
+        channel: ChannelId,
+        bytes: &[u8],
+    ) -> impl Future<Output = Result<(), TransportError>> + Send;
     fn resize(
         &self,
         channel: ChannelId,
@@ -351,14 +382,17 @@ mod tests {
     #[test]
     fn should_report_rejected_credentials_when_authenticating_a_connection() {
         let mut mock = MockSshTransport::new();
-        mock.expect_authenticate().once().returning(|_, _| {
-            Box::pin(async { Err(TransportError::AuthenticationRejected) })
-        });
+        mock.expect_authenticate()
+            .once()
+            .returning(|_, _| Box::pin(async { Err(TransportError::AuthenticationRejected) }));
         let result = block_on(mock.authenticate(
             ConnectionId::new(1),
             Credential::Password(SecretString::new("pw")),
         ));
-        assert!(matches!(result, Err(TransportError::AuthenticationRejected)));
+        assert!(matches!(
+            result,
+            Err(TransportError::AuthenticationRejected)
+        ));
     }
 
     #[test]
@@ -366,7 +400,8 @@ mod tests {
         let mut sink = MockPtySink::new();
         sink.expect_data()
             .once()
-            .withf(|bytes| *bytes == b"ok");
+            .withf(|bytes| *bytes == *b"ok")
+            .returning(|_| ());
         let mut mock = MockSshTransport::new();
         mock.expect_open_pty().once().returning(|_, _, mut sink| {
             sink.data(b"ok");
@@ -374,10 +409,7 @@ mod tests {
         });
         let channel = block_on(mock.open_pty(
             ConnectionId::new(1),
-            PtySize {
-                rows: 24,
-                cols: 80,
-            },
+            PtySize { rows: 24, cols: 80 },
             Box::new(sink),
         ))
         .unwrap();
@@ -389,28 +421,28 @@ mod tests {
         let mut sink = MockPtySink::new();
         sink.expect_closed()
             .once()
-            .withf(|status| *status == Some(0));
+            .withf(|status| *status == Some(0))
+            .returning(|_| ());
         let mut mock = MockSshTransport::new();
         mock.expect_open_pty().once().returning(|_, _, mut sink| {
             sink.closed(Some(0));
             Box::pin(async { Ok(ChannelId::new(3)) })
         });
-        assert!(block_on(mock.open_pty(
-            ConnectionId::new(1),
-            PtySize {
-                rows: 24,
-                cols: 80,
-            },
-            Box::new(sink),
-        ))
-        .is_ok());
+        assert!(
+            block_on(mock.open_pty(
+                ConnectionId::new(1),
+                PtySize { rows: 24, cols: 80 },
+                Box::new(sink),
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
     fn should_mock_ssh_transport_when_writing_pty_input() {
         let mut mock = MockSshTransport::new();
         mock.expect_write().once().returning(|channel, bytes| {
-            assert_eq!(*channel, ChannelId::new(4));
+            assert_eq!(channel, ChannelId::new(4));
             assert_eq!(bytes, b"ls\n");
             Box::pin(async { Ok(()) })
         });
@@ -423,13 +455,7 @@ mod tests {
         mock.expect_resize()
             .once()
             .returning(|_, _| Box::pin(async { Err(TransportError::NotConnected) }));
-        let result = block_on(mock.resize(
-            ChannelId::new(5),
-            PtySize {
-                rows: 24,
-                cols: 80,
-            },
-        ));
+        let result = block_on(mock.resize(ChannelId::new(5), PtySize { rows: 24, cols: 80 }));
         assert!(matches!(result, Err(TransportError::NotConnected)));
     }
 
@@ -441,13 +467,7 @@ mod tests {
 
     #[test]
     fn should_accept_positive_dimensions_when_creating_pty_size() {
-        assert_eq!(
-            PtySize::new(24, 80),
-            Ok(PtySize {
-                rows: 24,
-                cols: 80
-            })
-        );
+        assert_eq!(PtySize::new(24, 80), Ok(PtySize { rows: 24, cols: 80 }));
     }
 
     #[test]

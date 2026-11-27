@@ -7,6 +7,10 @@ pub enum TransportError {
     Connect,
     #[error("SSH authentication failed")]
     Authentication,
+    #[error("SSH credentials were rejected")]
+    AuthenticationRejected,
+    #[error("SSH connection is closed or unknown")]
+    NotConnected,
     #[error("failed to open a PTY channel")]
     OpenPty,
     #[error("PTY resize failed")]
