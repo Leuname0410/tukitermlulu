@@ -1,12 +1,12 @@
 #![cfg(feature = "integration")]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use russh::keys::HashAlg;
 use russh::server::{Auth, Handler as ServerHandler, run_stream};
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::ssh_transport::RusshTransport;
@@ -22,6 +22,87 @@ struct NoopSink;
 impl PtySink for NoopSink {
     fn data(&mut self, _bytes: &[u8]) {}
     fn closed(&mut self, _exit_status: Option<u32>) {}
+}
+
+/// Estado compartido del sink de prueba: bytes acumulados y cierre observado.
+#[derive(Clone)]
+struct SinkState {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    closed: Arc<Mutex<Option<Option<u32>>>>,
+    notify: Arc<Notify>,
+}
+
+impl SinkState {
+    fn new() -> Self {
+        Self {
+            bytes: Arc::new(Mutex::new(Vec::new())),
+            closed: Arc::new(Mutex::new(None)),
+            notify: Arc::new(Notify::new()),
+        }
+    }
+}
+
+struct RecordingSink {
+    state: SinkState,
+}
+
+impl RecordingSink {
+    fn new() -> (Self, SinkState) {
+        let state = SinkState::new();
+        (
+            Self {
+                state: state.clone(),
+            },
+            state,
+        )
+    }
+}
+
+impl PtySink for RecordingSink {
+    fn data(&mut self, bytes: &[u8]) {
+        self.state.bytes.lock().unwrap().extend_from_slice(bytes);
+        self.state.notify.notify_one();
+    }
+
+    fn closed(&mut self, exit_status: Option<u32>) {
+        *self.state.closed.lock().unwrap() = Some(exit_status);
+        self.state.notify.notify_one();
+    }
+}
+
+async fn wait_for_output(state: &SinkState, needle: &[u8]) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notified = state.notify.notified();
+            tokio::pin!(notified);
+            {
+                let bytes = state.bytes.lock().unwrap();
+                if bytes.windows(needle.len()).any(|window| window == needle) {
+                    return bytes.clone();
+                }
+            }
+            notified.await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("la salida del PTY no contenía {needle:?} en 5 s"))
+}
+
+async fn wait_for_close(state: &SinkState) -> Option<u32> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let notified = state.notify.notified();
+            tokio::pin!(notified);
+            {
+                if let Some(status) = *state.closed.lock().unwrap() {
+                    return status;
+                }
+            }
+            notified.await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("el sink no recibió closed en 5 s"))
 }
 
 fn fixture_path(relative: &str) -> String {
@@ -42,6 +123,20 @@ fn test_host() -> Host {
 async fn connected_host() -> (RusshTransport, Connected) {
     let transport = RusshTransport::new();
     let connected = transport.connect(&test_host()).await.unwrap();
+    (transport, connected)
+}
+
+async fn authenticated_host() -> (RusshTransport, Connected) {
+    let (transport, connected) = connected_host().await;
+    let path = fixture_path("ed25519");
+    let key = RusshKeyLoader
+        .load(&KeyRef::new(&path).unwrap(), None)
+        .await
+        .unwrap();
+    transport
+        .authenticate(connected.id, Credential::PublicKey(key))
+        .await
+        .unwrap();
     (transport, connected)
 }
 
@@ -222,4 +317,87 @@ async fn should_connect_with_ipv6_hostname_when_ipv6_is_available() {
     drop(started);
     drop(release);
     server.abort();
+}
+
+#[tokio::test]
+async fn should_receive_echo_when_writing_to_pty() {
+    let (transport, connected) = authenticated_host().await;
+    let (sink, state) = RecordingSink::new();
+    let channel = transport
+        .open_pty(connected.id, PtySize::new(24, 80).unwrap(), Box::new(sink))
+        .await
+        .unwrap();
+
+    transport.write(channel, b"echo ok\n").await.unwrap();
+
+    let output = wait_for_output(&state, b"ok").await;
+    assert!(String::from_utf8_lossy(&output).contains("ok"));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_report_exit_status_when_shell_exits() {
+    let (transport, connected) = authenticated_host().await;
+    let (sink, state) = RecordingSink::new();
+    let channel = transport
+        .open_pty(connected.id, PtySize::new(24, 80).unwrap(), Box::new(sink))
+        .await
+        .unwrap();
+
+    transport.write(channel, b"exit\n").await.unwrap();
+
+    assert_eq!(wait_for_close(&state).await, Some(0));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_observe_new_size_when_resizing_pty() {
+    let (transport, connected) = authenticated_host().await;
+    let (sink, state) = RecordingSink::new();
+    let channel = transport
+        .open_pty(connected.id, PtySize::new(24, 80).unwrap(), Box::new(sink))
+        .await
+        .unwrap();
+
+    transport
+        .resize(channel, PtySize::new(40, 120).unwrap())
+        .await
+        .unwrap();
+    transport.write(channel, b"stty size\n").await.unwrap();
+
+    let output = wait_for_output(&state, b"40 120").await;
+    assert!(String::from_utf8_lossy(&output).contains("40 120"));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_reject_write_when_channel_is_closed() {
+    let (transport, connected) = authenticated_host().await;
+    let (sink, state) = RecordingSink::new();
+    let channel = transport
+        .open_pty(connected.id, PtySize::new(24, 80).unwrap(), Box::new(sink))
+        .await
+        .unwrap();
+
+    transport.write(channel, b"exit\n").await.unwrap();
+    assert_eq!(wait_for_close(&state).await, Some(0));
+    assert!(matches!(
+        transport.write(channel, b"echo ok\n").await,
+        Err(TransportError::NotConnected)
+    ));
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_notify_close_when_connection_is_closed_with_open_pty() {
+    let (transport, connected) = authenticated_host().await;
+    let (sink, state) = RecordingSink::new();
+    transport
+        .open_pty(connected.id, PtySize::new(24, 80).unwrap(), Box::new(sink))
+        .await
+        .unwrap();
+
+    transport.close(connected.id).await.unwrap();
+
+    let _ = wait_for_close(&state).await;
 }
