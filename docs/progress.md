@@ -21,5 +21,14 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-08a | APPROVE | 1 | 4 (+lock) | rama `feat/T-08-core-ports` desde T-07b. Opción B (`impl Future + Send`). `SshTransport`, `RemoteFileSystem`, `CwdTracker`, `SecretString`/`PrivateKey` (zeroize, Debug redactado, sin Clone/Serialize). Partido por tamaño (autorizado). MINOR: errores sin contexto; `PrivateKey` como bytes |
 | T-08b | APPROVE | 1 | 2 | rama `feat/T-08b-remaining-ports` desde T-08a. `KeyLoader`, `SecretStore` (solo contraseñas, ADR-004), `HostKeyVerifier` (verify + trust TOFU), `SessionRepository`. Errores con mensajes literales. MINOR: huella no valida prefijo `SHA256:` |
 
+| T-09 | APPROVE | 1 | 5 (+lock) | rama `feat/T-09-key-loader` desde `main` (297538c). 25 tests; spike borrado. MINOR: errores PPK clasificados por texto de `Debug` |
+| T-10 | APPROVE | 1 | 4 (+lock) | rama `feat/T-10-secret-store` desde T-09. Gate 2 intentos (lockfile sin commitear por mi instrucción). Keyring real verificado en Windows |
+| T-11 | APPROVE | 2 | 4 (+lock) | rama `feat/T-11-known-hosts` desde T-10. R1 MAJOR: huella sin validar permitía inyectar líneas. MINOR: temporal huérfano si falla `rename`; sin lock entre `trust` concurrentes |
+| T-12a | APPROVE | 1 | 4 (+lock) | rama `feat/T-12a-import-key-use-case` desde T-11. Primer caso de uso + puerto `KeyFileStore`. MINOR: `has_passphrase=true` si se da passphrase a llave sin cifrar (→ T-18b) |
+| T-12b | APPROVE | 2 | 4 (+lock) | rama `feat/T-12b-key-file-store` desde T-12a. R1 BLOCKER: candidatos leídos sin `Zeroizing`. Windows: ACL heredada de `%APPDATA%` (pendiente de validar). `cfg(unix)` solo verificable en CI |
+
+## F2: cerrada (2026-11-26)
+T-09 → T-10 → T-11 → T-12a → T-12b. `feat/T-12b-key-file-store` contiene F0 + F1 + F2.
+
 ## F1: cerrada (2026-11-26)
 T-06 → T-07a → T-07b → T-08a → T-08b, encadenadas. `feat/T-08b-remaining-ports` contiene F0 + F1.
