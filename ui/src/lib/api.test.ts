@@ -24,6 +24,7 @@ import {
   duplicateSession,
   enqueueDownload,
   enqueueUpload,
+  exportDiagnostics,
   isCommandError,
   listFolders,
   listSessions,
@@ -474,6 +475,21 @@ describe("typed terminal api", () => {
 
     expect(await downloadsDir()).toBe("C:/Users/alice/Downloads");
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("downloads_dir");
+  });
+
+  it("should invoke export_diagnostics and return the path when exporting", async () => {
+    const path = "C:/Users/alice/Downloads/tukitermlulu-diagnostico-20260101-010101.txt";
+    vi.mocked(invoke).mockResolvedValueOnce(path);
+
+    expect(await exportDiagnostics()).toBe(path);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("export_diagnostics");
+  });
+
+  it("should reject malformed diagnostic responses when exporting", async () => {
+    for (const raw of [null, 7, { path: "C:/Downloads/diagnostico.txt" }]) {
+      vi.mocked(invoke).mockResolvedValueOnce(raw);
+      await expect(exportDiagnostics()).rejects.toThrow();
+    }
   });
 
   it("should reject malformed sftp responses when listing and reading home", async () => {
