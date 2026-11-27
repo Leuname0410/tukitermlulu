@@ -27,6 +27,11 @@ import {
   listTransfers,
   onTransfers,
   saveFolder,
+  sftpHome,
+  sftpList,
+  sftpMkdir,
+  sftpRemove,
+  sftpRename,
   terminalResize,
   terminalWrite,
   updateSession,
@@ -349,6 +354,62 @@ describe("typed terminal api", () => {
 
     expect(await listTransfers()).toEqual([transferDto]);
     expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_transfers");
+  });
+
+  it("should invoke sftp commands with camelCase arguments", async () => {
+    vi.mocked(invoke).mockResolvedValue("/home/alice");
+    expect(await sftpHome(3)).toBe("/home/alice");
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, "sftp_home", { connectionId: 3 });
+
+    const entry = { name: "a.txt", path: "/home/alice/a.txt", isDir: false, size: 5 };
+    vi.mocked(invoke).mockResolvedValue([entry]);
+    expect(await sftpList(3, "/home/alice")).toEqual([entry]);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "sftp_list", {
+      connectionId: 3,
+      path: "/home/alice",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await sftpMkdir(3, "/home/alice/new");
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(3, "sftp_mkdir", {
+      connectionId: 3,
+      path: "/home/alice/new",
+    });
+    await sftpRename(3, "/home/alice/a", "/home/alice/b");
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(4, "sftp_rename", {
+      connectionId: 3,
+      from: "/home/alice/a",
+      to: "/home/alice/b",
+    });
+    await sftpRemove(3, "/home/alice/b");
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(5, "sftp_remove", {
+      connectionId: 3,
+      path: "/home/alice/b",
+    });
+  });
+
+  it("should reject malformed responses when listing remote entries", async () => {
+    const valid = { name: "a", path: "/a", isDir: true, size: 0 };
+    for (const raw of [
+      null,
+      {},
+      [null],
+      [{ ...valid, name: 3 }],
+      [{ ...valid, path: null }],
+      [{ ...valid, isDir: "true" }],
+      [{ ...valid, size: "0" }],
+      { ...valid },
+    ]) {
+      vi.mocked(invoke).mockResolvedValueOnce(raw);
+      await expect(sftpList(1, "/")).rejects.toThrow();
+    }
+  });
+
+  it("should reject a malformed response when reading the remote home", async () => {
+    for (const raw of [null, 7, { path: "/home/alice" }]) {
+      vi.mocked(invoke).mockResolvedValueOnce(raw);
+      await expect(sftpHome(1)).rejects.toThrow();
+    }
   });
 
   it("should deliver only well-formed transfer events when listening", async () => {
