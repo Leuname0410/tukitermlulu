@@ -128,7 +128,11 @@ export function createTabController(
         // Un fallo al desconectar no impide cerrar la pestaña.
       }
     }
-    await closeTab(tab.id);
+    try {
+      await closeTab(tab.id);
+    } catch {
+      // Un fallo al cerrar en el backend no impide cerrar la pestaña localmente.
+    }
     connectionId = null;
     sink = null;
     pending = [];

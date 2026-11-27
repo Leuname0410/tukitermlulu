@@ -70,6 +70,8 @@ export function useTerminal(
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     fitAddon.fit();
+    // El PTY arranca con el tamaño por defecto; sincroniza el tamaño real tras el fit inicial.
+    void terminalResize(channelId, terminal.rows, terminal.cols);
 
     // WebGL es opcional: si falla o pierde el contexto seguimos con el renderer por defecto.
     let webglAddon: WebglAddon | null = null;
