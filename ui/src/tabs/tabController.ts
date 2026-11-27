@@ -78,6 +78,9 @@ export function createTabController(
       connectionId = null;
       dispatch({ type: "remote_closed", id: tab.id, exitStatus });
     },
+    onCwd: (path) => {
+      dispatch({ type: "cwd", id: tab.id, path });
+    },
   };
 
   async function startConnect(secrets: ConnectSecrets, size: TerminalSize): Promise<void> {

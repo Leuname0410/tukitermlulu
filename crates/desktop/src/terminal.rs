@@ -9,6 +9,7 @@ use tauri::AppHandle;
 use tauri::State;
 use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tokio::sync::Notify;
+use tuki_adapters::cwd_tracker::Osc7Tracker;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::known_hosts::FileHostKeyVerifier;
 use tuki_adapters::secret_store::KeyringSecretStore;
@@ -25,9 +26,10 @@ use tuki_core::auth::{AuthMethod, KeyRef};
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::{KeyError, RepositoryError, TransportError};
 use tuki_core::ports::{
-    ChannelId, ConnectionId, HostKeyFingerprint, PtySink, PtySize, SecretString, SessionRepository,
-    SshTransport,
+    ChannelId, ConnectionId, CwdTracker, HostKeyFingerprint, PtySink, PtySize, SecretString,
+    SessionRepository, SshTransport,
 };
+use tuki_core::remote_path::RemotePath;
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
@@ -135,15 +137,34 @@ pub struct TerminalClosed {
     exit_status: Option<u32>,
 }
 
-/// Entrega la salida del PTY como bytes raw y notifica su cierre.
+/// Aviso de cambio de directorio remoto detectado en la salida del PTY.
+#[derive(Serialize, Clone)]
+pub struct CwdChanged {
+    path: String,
+}
+
+/// Entrega la salida del PTY como bytes raw, notifica su cierre y el cwd.
 pub struct ChannelSink {
     output: Channel<InvokeResponseBody>,
     closed: Channel<TerminalClosed>,
+    tracker: Osc7Tracker,
+    last_cwd: Option<RemotePath>,
+    cwd: Channel<CwdChanged>,
 }
 
 impl PtySink for ChannelSink {
     fn data(&mut self, bytes: &[u8]) {
         let _ = self.output.send(InvokeResponseBody::Raw(bytes.to_vec()));
+        if let Some(path) = self
+            .tracker
+            .feed(bytes)
+            .filter(|path| self.last_cwd.as_ref() != Some(path))
+        {
+            let _ = self.cwd.send(CwdChanged {
+                path: path.as_str().to_owned(),
+            });
+            self.last_cwd = Some(path);
+        }
     }
 
     fn closed(&mut self, exit_status: Option<u32>) {
@@ -312,7 +333,7 @@ fn to_domain(args: &ConnectArgs, stored: Option<Session>) -> Result<DomainParts,
     Ok((session, pty_size, password, passphrase, approved))
 }
 
-/// Conecta y abre un PTY; la salida viaja por `on_output`, el cierre por `on_closed`.
+/// Conecta y abre un PTY; la salida viaja por `on_output`, el cierre por `on_closed` y el cwd por `on_cwd`.
 #[tauri::command]
 pub async fn connect(
     state: State<'_, AppState>,
@@ -320,6 +341,7 @@ pub async fn connect(
     args: ConnectArgs,
     on_output: Channel<InvokeResponseBody>,
     on_closed: Channel<TerminalClosed>,
+    on_cwd: Channel<CwdChanged>,
 ) -> Result<ConnectResponse, CommandError> {
     let stored = session_for_connect(&state.repository, &args).await?;
     let (session, pty_size, password, passphrase, approved_fingerprint) = to_domain(&args, stored)?;
@@ -340,6 +362,9 @@ pub async fn connect(
         sink: Box::new(ChannelSink {
             output: on_output,
             closed: on_closed,
+            tracker: Osc7Tracker::new(),
+            last_cwd: None,
+            cwd: on_cwd,
         }),
     };
     let outcome = use_case
@@ -426,20 +451,19 @@ mod tests {
     use tuki_adapters::cwd_tracker::Osc7Tracker;
     use tuki_adapters::session_repository::SqliteSessionRepository;
     use tuki_core::port_errors::{HostKeyError, KeyError, SecretError, TransportError};
-    use tuki_core::ports::{ChannelId, ConnectionId, CwdTracker, HostKeyFingerprint, PtySize};
+    use tuki_core::ports::{ChannelId, ConnectionId, HostKeyFingerprint, PtySize};
 
     use super::*;
 
+    type RecordedOutput = Arc<Mutex<Vec<InvokeResponseBody>>>;
+    type RecordedPaths = Arc<Mutex<Vec<String>>>;
+
     fn noop_cwd() -> Channel<CwdChanged> {
-        Channel::new(move |_body: CwdChanged| Ok(()))
+        Channel::new(move |_body| Ok(()))
     }
 
     /// Crea un sink que captura la salida raw y las rutas emitidas por el canal de cwd.
-    fn recording_sink() -> (
-        ChannelSink,
-        Arc<Mutex<Vec<InvokeResponseBody>>>,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    fn recording_sink() -> (ChannelSink, RecordedOutput, RecordedPaths) {
         let output_bytes = Arc::new(Mutex::new(Vec::new()));
         let output = {
             let seen = Arc::clone(&output_bytes);
@@ -451,14 +475,19 @@ mod tests {
         let cwd_paths = Arc::new(Mutex::new(Vec::new()));
         let cwd = {
             let seen = Arc::clone(&cwd_paths);
-            Channel::new(move |body: CwdChanged| {
-                seen.lock().unwrap().push(body.path);
+            Channel::new(move |body| {
+                if let InvokeResponseBody::Json(json) = body {
+                    let message: serde_json::Value = serde_json::from_str(&json).unwrap();
+                    if let Some(path) = message.get("path").and_then(|value| value.as_str()) {
+                        seen.lock().unwrap().push(path.to_owned());
+                    }
+                }
                 Ok(())
             })
         };
         let sink = ChannelSink {
             output,
-            closed: Channel::new(move |_body: TerminalClosed| Ok(())),
+            closed: Channel::new(move |_body| Ok(())),
             tracker: Osc7Tracker::new(),
             last_cwd: None,
             cwd,

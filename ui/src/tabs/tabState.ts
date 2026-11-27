@@ -20,6 +20,7 @@ export interface Tab {
   title: string;
   target: ConnectTarget;
   status: TabStatus;
+  cwd?: string;
 }
 
 export type TabAction =
@@ -28,6 +29,7 @@ export type TabAction =
   | { type: "resolved"; id: number; response: ConnectResponse }
   | { type: "failed"; id: number; error: CommandError }
   | { type: "remote_closed"; id: number; exitStatus: number | null }
+  | { type: "cwd"; id: number; path: string }
   | { type: "closed"; id: number };
 
 function statusFromResponse(response: ConnectResponse): TabStatus {
@@ -46,16 +48,20 @@ function statusFromResponse(response: ConnectResponse): TabStatus {
   }
 }
 
-function withStatus(tabs: readonly Tab[], id: number, status: TabStatus): Tab[] {
+function updateTab(tabs: readonly Tab[], id: number, update: (tab: Tab) => Tab): Tab[] {
   let found = false;
   const next = tabs.map((tab) => {
     if (tab.id !== id) {
       return tab;
     }
     found = true;
-    return { ...tab, status };
+    return update(tab);
   });
   return found ? next : (tabs as Tab[]);
+}
+
+function withStatus(tabs: readonly Tab[], id: number, status: TabStatus): Tab[] {
+  return updateTab(tabs, id, (tab) => ({ ...tab, status }));
 }
 
 /** Máquina de estados pura de las pestañas; ignora acciones de ids desconocidos. */
@@ -74,6 +80,8 @@ export function tabsReducer(tabs: readonly Tab[], action: TabAction): Tab[] {
         kind: "dropped",
         exitStatus: action.exitStatus,
       });
+    case "cwd":
+      return updateTab(tabs, action.id, (tab) => ({ ...tab, cwd: action.path }));
     case "closed": {
       const next = tabs.filter((tab) => tab.id !== action.id);
       return next.length === tabs.length ? (tabs as Tab[]) : next;

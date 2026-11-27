@@ -110,6 +110,7 @@ export type FileDropEvent =
 export interface TerminalHandlers {
   onData: (bytes: Uint8Array) => void;
   onClosed: (exitStatus: number | null) => void;
+  onCwd?: (path: string) => void;
 }
 
 // El backend serializa las variantes de ConnectResponse en snake_case y sus campos
@@ -236,6 +237,10 @@ function parseConnectResponse(value: unknown): ConnectResponse {
   }
 }
 
+function parseCwd(value: unknown): string {
+  return readString(asRecord(value).path, "path");
+}
+
 function parseExitStatus(value: unknown): number | null {
   const message = asRecord(value);
   const status = message.exit_status;
@@ -321,6 +326,7 @@ export async function connect(
 ): Promise<ConnectResponse> {
   const onOutput = new Channel<unknown>();
   const onClosed = new Channel<unknown>();
+  const onCwd = new Channel<unknown>();
 
   onOutput.onmessage = (message) => {
     if (!(message instanceof ArrayBuffer)) {
@@ -331,8 +337,15 @@ export async function connect(
   onClosed.onmessage = (message) => {
     handlers.onClosed(parseExitStatus(message));
   };
+  onCwd.onmessage = (message) => {
+    try {
+      handlers.onCwd?.(parseCwd(message));
+    } catch {
+      // Una carga inesperada se ignora sin romper la suscripción.
+    }
+  };
 
-  const response = await invoke<unknown>("connect", { tabId, args, onOutput, onClosed });
+  const response = await invoke<unknown>("connect", { tabId, args, onOutput, onClosed, onCwd });
   return parseConnectResponse(response);
 }
 
