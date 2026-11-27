@@ -150,6 +150,7 @@ mod tests {
             path: RemotePath::new(path).unwrap(),
             is_dir,
             size,
+            permissions: Some(0o640),
         }
     }
 
@@ -177,6 +178,36 @@ mod tests {
         let json = serde_json::to_string(&dtos[0]).unwrap();
         assert!(json.contains("\"isDir\":true"));
         assert!(json.contains("\"size\":0"));
+        assert!(json.contains("\"permissions\":416"));
+    }
+
+    #[test]
+    fn should_reject_out_of_range_mode_when_chmodding() {
+        let fs = MockRemoteFileSystem::new();
+        let id = ConnectionId::new(4);
+        assert_eq!(
+            kind(block_on(chmod(&fs, id, "/srv/a", 0o10000))),
+            "invalid_input"
+        );
+        assert_eq!(
+            kind(block_on(chmod(&fs, id, "/srv/a", 0o7777 + 1))),
+            "invalid_input"
+        );
+        assert_eq!(
+            kind(block_on(chmod(&fs, id, "", 0o640))),
+            "invalid_input"
+        );
+    }
+
+    #[test]
+    fn should_forward_valid_mode_when_chmodding() {
+        let mut fs = MockRemoteFileSystem::new();
+        fs.expect_chmod()
+            .once()
+            .withf(|_, path, mode| path.as_str() == "/srv/a" && *mode == 0o640)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+
+        assert!(block_on(chmod(&fs, ConnectionId::new(4), "/srv/a", 0o640)).is_ok());
     }
 
     #[test]

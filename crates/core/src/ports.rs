@@ -528,11 +528,22 @@ mod tests {
                 Ok(FileStat {
                     size: 0,
                     is_dir: false,
+                    permissions: None,
                 })
             })
         });
         let stat = block_on(mock.stat(ConnectionId::new(1), &path())).unwrap();
         assert_eq!(stat.size, 0);
+    }
+
+    #[test]
+    fn should_mock_remote_file_system_when_chmodding_a_path() {
+        let mut mock = MockRemoteFileSystem::new();
+        mock.expect_chmod()
+            .once()
+            .withf(|_, path, mode| path.as_str() == "/tmp" && *mode == 0o640)
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
+        assert!(block_on(mock.chmod(ConnectionId::new(1), &path(), 0o640)).is_ok());
     }
 
     #[test]

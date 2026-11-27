@@ -10,8 +10,8 @@ use tuki_adapters::ssh_transport::RusshTransport;
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::FsError;
 use tuki_core::ports::{
-    Connected, ConnectionId, Credential, PtySink, PtySize, RemoteFileSystem, SecretString,
-    SshTransport,
+    CancelToken, Connected, ConnectionId, Credential, FileTransfer, PtySink, PtySize,
+    RemoteFileSystem, SecretString, SshTransport, TransferProgress,
 };
 use tuki_core::remote_path::RemotePath;
 
@@ -33,6 +33,13 @@ fn path(value: &str) -> RemotePath {
 fn unique_path() -> RemotePath {
     let suffix = NEXT_SUFFIX.fetch_add(1, Ordering::Relaxed);
     path(&format!("/home/tuki/t21-{}-{suffix}", std::process::id()))
+}
+
+/// Progreso mudo para las subidas de prueba.
+struct SilentProgress;
+
+impl TransferProgress for SilentProgress {
+    fn progress(&self, _transferred: u64, _total: Option<u64>) {}
 }
 
 async fn authenticated_fs() -> (RusshTransport, Connected, RusshFileSystem) {
@@ -307,4 +314,43 @@ async fn should_report_operation_when_resolving_home_after_connection_is_closed(
     let result = fs.home(connected.id).await;
 
     assert!(matches!(result, Err(FsError::Operation)));
+}
+
+#[tokio::test]
+async fn should_apply_and_report_permissions_when_chmodding_an_uploaded_file() {
+    let (transport, connected, fs) = authenticated_fs().await;
+    let dir = tempfile::tempdir().unwrap();
+    let local = dir.path().join("source.txt");
+    std::fs::write(&local, b"contenido").unwrap();
+    let file = unique_path();
+    fs.upload(
+        connected.id,
+        &local,
+        &file,
+        &SilentProgress,
+        &CancelToken::default(),
+    )
+    .await
+    .unwrap();
+
+    fs.chmod(connected.id, &file, 0o640).await.unwrap();
+
+    let stat = fs.stat(connected.id, &file).await.unwrap();
+    assert_eq!(stat.permissions.unwrap_or_default() & 0o777, 0o640);
+    let parent = file.parent().unwrap();
+    let entries = fs.list(connected.id, &parent).await.unwrap();
+    let listed = entries.iter().find(|entry| entry.path == file).unwrap();
+    assert_eq!(listed.permissions.unwrap_or_default() & 0o777, 0o640);
+    assert!(fs.remove(connected.id, &file).await.is_ok());
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_report_not_found_when_chmodding_a_missing_path() {
+    let (transport, connected, fs) = authenticated_fs().await;
+
+    let result = fs.chmod(connected.id, &unique_path(), 0o640).await;
+
+    assert!(matches!(result, Err(FsError::NotFound)));
+    assert!(transport.close(connected.id).await.is_ok());
 }

@@ -20,6 +20,7 @@ import {
   deleteFolder,
   deleteSession,
   disconnect,
+  downloadsDir,
   duplicateSession,
   enqueueDownload,
   enqueueUpload,
@@ -30,6 +31,7 @@ import {
   onFileDrop,
   onTransfers,
   saveFolder,
+  sftpChmod,
   sftpHome,
   sftpList,
   sftpMkdir,
@@ -373,7 +375,13 @@ describe("typed terminal api", () => {
     expect(await sftpHome(3)).toBe("/home/alice");
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, "sftp_home", { connectionId: 3 });
 
-    const entry = { name: "a.txt", path: "/home/alice/a.txt", isDir: false, size: 5 };
+    const entry = {
+      name: "a.txt",
+      path: "/home/alice/a.txt",
+      isDir: false,
+      size: 5,
+      permissions: 0o640,
+    };
     vi.mocked(invoke).mockResolvedValue([entry]);
     expect(await sftpList(3, "/home/alice")).toEqual([entry]);
     expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "sftp_list", {
@@ -398,6 +406,21 @@ describe("typed terminal api", () => {
       connectionId: 3,
       path: "/home/alice/b",
     });
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await sftpChmod(3, "/home/alice/b", 0o640);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(6, "sftp_chmod", {
+      connectionId: 3,
+      path: "/home/alice/b",
+      mode: 416,
+    });
+  });
+
+  it("should invoke downloads_dir without arguments when reading the downloads folder", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce("C:/Users/alice/Downloads");
+
+    expect(await downloadsDir()).toBe("C:/Users/alice/Downloads");
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("downloads_dir");
   });
 
   it("should reject malformed sftp responses when listing and reading home", async () => {
@@ -410,6 +433,7 @@ describe("typed terminal api", () => {
       [{ ...valid, path: null }],
       [{ ...valid, isDir: "true" }],
       [{ ...valid, size: "0" }],
+      [{ ...valid, permissions: "640" }],
       { ...valid },
     ]) {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
