@@ -5,8 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use russh::client::{AuthResult, Config, Handle};
+use russh::client::{AuthResult, Config, Handle, Msg};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use russh::{ChannelMsg, ChannelWriteHalf};
 use russh::{Disconnect, Error as RusshError};
 use tokio::sync::Mutex;
 use tuki_core::host::Host;
@@ -45,11 +46,22 @@ struct StoredConnection {
 /// Conexión compartida: cada operación bloquea solo su propio handle, nunca el mapa.
 type SharedConnection = Arc<Mutex<StoredConnection>>;
 
+/// Escritor de un PTY junto a la conexión que lo originó.
+struct PtyChannel {
+    connection: ConnectionId,
+    writer: Arc<ChannelWriteHalf<Msg>>,
+}
+
+/// Canales PTY compartidos con la tarea lectora; nunca se retiene el lock durante I/O.
+type SharedChannels = Arc<Mutex<HashMap<ChannelId, PtyChannel>>>;
+
 /// Transporte SSH con keepalive activo y connections indexadas por `ConnectionId`.
 pub struct RusshTransport {
     config: Arc<Config>,
     connections: Mutex<HashMap<ConnectionId, SharedConnection>>,
+    channels: SharedChannels,
     next_id: AtomicU64,
+    next_channel_id: AtomicU64,
 }
 
 impl RusshTransport {
@@ -64,7 +76,9 @@ impl RusshTransport {
         Self {
             config: Arc::new(config),
             connections: Mutex::new(HashMap::new()),
+            channels: Arc::new(Mutex::new(HashMap::new())),
             next_id: AtomicU64::new(1),
+            next_channel_id: AtomicU64::new(1),
         }
     }
 }
@@ -145,19 +159,117 @@ impl SshTransport for RusshTransport {
 
     async fn open_pty(
         &self,
-        _conn: ConnectionId,
-        _size: PtySize,
-        _sink: Box<dyn PtySink>,
+        conn: ConnectionId,
+        size: PtySize,
+        sink: Box<dyn PtySink>,
     ) -> Result<ChannelId, TransportError> {
-        Err(TransportError::NotConnected)
+        let channel = {
+            let connection = {
+                let connections = self.connections.lock().await;
+                Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
+            };
+            let stored = connection.lock().await;
+            stored
+                .handle
+                .channel_open_session()
+                .await
+                .map_err(|_| TransportError::OpenPty)?
+        };
+        channel
+            .request_pty(
+                false,
+                "xterm-256color",
+                u32::from(size.cols),
+                u32::from(size.rows),
+                0,
+                0,
+                &[],
+            )
+            .await
+            .map_err(|_| TransportError::OpenPty)?;
+        channel
+            .request_shell(false)
+            .await
+            .map_err(|_| TransportError::OpenPty)?;
+
+        let (mut reader, writer) = channel.split();
+        let channel_id = ChannelId::new(self.next_channel_id.fetch_add(1, Ordering::Relaxed));
+        let channels = Arc::clone(&self.channels);
+        channels.lock().await.insert(
+            channel_id,
+            PtyChannel {
+                connection: conn,
+                writer: Arc::new(writer),
+            },
+        );
+
+        let mut sink = sink;
+        tokio::spawn(async move {
+            let mut status = None;
+            let mut eof = false;
+            loop {
+                let msg = if eof {
+                    // OpenSSH envía EOF antes del exit-status: esperamos un instante para
+                    // capturarlo sin bloquear el runtime ni retener locks del transporte.
+                    match tokio::time::timeout(Duration::from_secs(1), reader.wait()).await {
+                        Ok(Some(msg)) => msg,
+                        Ok(None) | Err(_) => break,
+                    }
+                } else {
+                    match reader.wait().await {
+                        Some(msg) => msg,
+                        None => break,
+                    }
+                };
+                match msg {
+                    ChannelMsg::Data { data } => {
+                        // `PtySink` es síncrono y debe ser barato: esta tarea nunca hace I/O
+                        // ni retiene locks del transporte mientras entrega los bytes.
+                        sink.data(&data);
+                    }
+                    ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    ChannelMsg::Eof => eof = true,
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+            channels.lock().await.remove(&channel_id);
+            sink.closed(status);
+        });
+
+        Ok(channel_id)
     }
 
-    async fn write(&self, _channel: ChannelId, _bytes: &[u8]) -> Result<(), TransportError> {
-        Err(TransportError::NotConnected)
+    async fn write(&self, channel: ChannelId, bytes: &[u8]) -> Result<(), TransportError> {
+        let writer = {
+            let channels = self.channels.lock().await;
+            Arc::clone(
+                &channels
+                    .get(&channel)
+                    .ok_or(TransportError::NotConnected)?
+                    .writer,
+            )
+        };
+        writer
+            .data_bytes(bytes.to_vec())
+            .await
+            .map_err(|_| TransportError::Io)
     }
 
-    async fn resize(&self, _channel: ChannelId, _size: PtySize) -> Result<(), TransportError> {
-        Err(TransportError::NotConnected)
+    async fn resize(&self, channel: ChannelId, size: PtySize) -> Result<(), TransportError> {
+        let writer = {
+            let channels = self.channels.lock().await;
+            Arc::clone(
+                &channels
+                    .get(&channel)
+                    .ok_or(TransportError::NotConnected)?
+                    .writer,
+            )
+        };
+        writer
+            .window_change(u32::from(size.cols), u32::from(size.rows), 0, 0)
+            .await
+            .map_err(|_| TransportError::Resize)
     }
 
     async fn close(&self, conn: ConnectionId) -> Result<(), TransportError> {
@@ -167,6 +279,24 @@ impl SshTransport for RusshTransport {
                 .remove(&conn)
                 .ok_or(TransportError::NotConnected)?
         };
+        let writers = {
+            let mut channels = self.channels.lock().await;
+            let ids: Vec<ChannelId> = channels
+                .iter()
+                .filter(|(_, pty)| pty.connection == conn)
+                .map(|(id, _)| *id)
+                .collect();
+            let mut writers = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(pty) = channels.remove(&id) {
+                    writers.push(pty.writer);
+                }
+            }
+            writers
+        };
+        for writer in writers {
+            let _ = writer.close().await;
+        }
         let stored = connection.lock().await;
         stored
             .handle
