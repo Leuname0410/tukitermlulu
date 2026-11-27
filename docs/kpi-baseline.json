@@ -1,0 +1,12 @@
+{
+  "targets": {
+    "connect_ms": 1500,
+    "echo_p95_ms": 16,
+    "sftp_ratio": 0.8
+  },
+  "baseline": {
+    "connect_ms": null,
+    "echo_p95_ms": null,
+    "sftp_ratio": null
+  }
+}
