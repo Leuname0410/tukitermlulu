@@ -175,7 +175,7 @@ repo/
 | T-21 | Adaptador `RemoteFileSystem` con russh-sftp **sobre la misma conexión** que la terminal | Integración: list/stat/mkdir/rename/remove |
 | T-22 | Transferencias por streaming con progreso, cancelación y cola | Archivo de 1 GB sin cargarlo en RAM; la cancelación limpia el parcial |
 | T-23 | UI `SftpSidebar`: lista con iconos, ordenar, ruta editable, subir de nivel, refrescar | Tests UI |
-| T-24 | Drag & drop: del SO al sidebar (subir) y del sidebar al SO (descargar) | Prueba e2e/manual en Linux, Windows y macOS (Finder) |
+| T-24 | Drag & drop del SO al sidebar (subir). Arrastrar del sidebar al SO queda fuera de v1 (decisión T-24b opción b, 2026-11-26): descargar va por el menú contextual (T-26b) a Descargas | Prueba e2e/manual en Linux, Windows y macOS (Finder) |
 | T-25 | Layout redimensionable sidebar \| terminal (como MobaXterm), recordado por sesión | Tests UI del split |
 | T-26 | Menú contextual: descargar, renombrar, borrar (con confirmación), nueva carpeta, copiar ruta, permisos (chmod en Linux) | Tests UI + integración |
 
