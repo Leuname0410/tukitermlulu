@@ -38,7 +38,7 @@ function connectPayload(call: Parameters<typeof invoke>): ConnectPayload {
   if (typeof payload !== "object" || payload === null || !("args" in payload)) {
     throw new Error("invoke de connect sin la forma esperada");
   }
-  return payload as ConnectPayload;
+  return payload as unknown as ConnectPayload;
 }
 
 function firstCall(): Parameters<typeof invoke> {
