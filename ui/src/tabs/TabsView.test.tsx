@@ -22,6 +22,12 @@ vi.mock("../terminal/TerminalView", () => ({
   ),
 }));
 
+vi.mock("../sftp/SftpSidebar", () => ({
+  SftpSidebar: (props: { connectionId: number }) => (
+    <aside aria-label="Explorador SFTP">sidebar:{props.connectionId}</aside>
+  ),
+}));
+
 function fillQuickConnect(overrides: Partial<{ host: string; port: string; username: string }> = {}): void {
   fireEvent.change(screen.getByLabelText("Host"), {
     target: { value: overrides.host ?? "example.com" },
@@ -235,5 +241,30 @@ describe("TabsView and QuickConnect", () => {
     expect(screen.getByTestId("terminal-27")).toBeTruthy();
     const panel27 = screen.getByTestId("terminal-27").closest("[role='tabpanel']");
     expect(panel27?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("should show the terminal and the sftp sidebar only in the connected tab", async () => {
+    const pending = deferred<ConnectResponse>();
+    vi.mocked(connect)
+      .mockResolvedValueOnce({ kind: "connected", connectionId: 30, channelId: 30 })
+      .mockReturnValueOnce(pending.promise);
+
+    render(<App />);
+    fillQuickConnect({ host: "one.example.com", username: "alice" });
+    submitQuickConnect();
+    await screen.findByTestId("terminal-30");
+
+    fillQuickConnect({ host: "two.example.com", username: "bob" });
+    submitQuickConnect();
+    await screen.findByRole("tab", { name: /bob@two.example.com/i });
+
+    const panelBob = screen.getByRole("tabpanel");
+    expect(within(panelBob).queryByRole("region", { name: "Terminal" })).toBeNull();
+    expect(within(panelBob).queryByLabelText("Explorador SFTP")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: /alice@one.example.com/i }));
+    const panelAlice = screen.getByRole("tabpanel");
+    expect(within(panelAlice).getByRole("region", { name: "Terminal" })).toBeTruthy();
+    expect(within(panelAlice).getByLabelText("Explorador SFTP")).toBeTruthy();
   });
 });
