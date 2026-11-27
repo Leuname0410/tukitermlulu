@@ -41,6 +41,7 @@ const UPSERT_SESSION: &str = "INSERT INTO sessions (id, name, hostname, port, us
 const UPSERT_FOLDER: &str = "INSERT INTO folders (id, name, parent) VALUES (?1, ?2, ?3) ON CONFLICT(id) DO UPDATE SET name=excluded.name, parent=excluded.parent";
 
 /// Repositorio de sesiones y carpetas sobre una conexión SQLite compartida.
+#[derive(Clone)]
 pub struct SqliteSessionRepository {
     conn: Arc<Mutex<rusqlite::Connection>>,
 }

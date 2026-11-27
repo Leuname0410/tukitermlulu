@@ -1,10 +1,349 @@
-//! Pruebas del puente IPC del gestor de sesiones.
+//! DTOs y comandos Tauri del gestor de sesiones.
+
+use serde::{Deserialize, Serialize};
+use tauri::State;
+use tuki_application::copy_delete_session::{DeleteSession, DuplicateSession};
+use tuki_application::edit_session::{CreateSession, UpdateSession};
+use tuki_application::session_errors::{PasswordChange, SessionDraft};
+use tuki_core::auth::{AuthMethod, KeyRef};
+use tuki_core::error::DomainError;
+use tuki_core::host::{Host, Hostname, Port, Username};
+use tuki_core::port_errors::RepositoryError;
+use tuki_core::ports::{SecretKey, SecretStore, SecretString, SessionRepository};
+use tuki_core::session::{Folder, FolderId, Session, SessionId};
+use zeroize::Zeroizing;
+
+use crate::terminal::{AppState, CommandError, secret_store};
+
+/// Sesión devuelta a la UI; nunca incluye contraseñas ni passphrases.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDto {
+    id: u64,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth: AuthDto,
+    folder: Option<u64>,
+    password_saved: bool,
+}
+
+/// Método de autenticación sin secretos.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum AuthDto {
+    Password {
+        remember: bool,
+    },
+    Key {
+        path: String,
+        #[serde(rename = "hasPassphrase")]
+        has_passphrase: bool,
+    },
+}
+
+/// Datos de una sesión enviados por la UI, validados con los constructores del dominio.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInput {
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    auth: AuthDto,
+    folder: Option<u64>,
+}
+
+/// Cambio de contraseña solicitado al actualizar una sesión.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PasswordInput {
+    Keep,
+    Set { value: Zeroizing<String> },
+    Forget,
+}
+
+/// Carpeta devuelta a la UI.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderDto {
+    id: u64,
+    name: String,
+    parent: Option<u64>,
+}
+
+fn from_domain(error: DomainError) -> CommandError {
+    CommandError::from_session(error.into())
+}
+
+fn from_repository(error: RepositoryError) -> CommandError {
+    CommandError::from_session(error.into())
+}
+
+/// Convierte la entrada validada en una entidad con el identificador indicado.
+fn to_session(input: SessionInput, id: u64) -> Result<Session, CommandError> {
+    let host = Host {
+        hostname: Hostname::new(&input.host).map_err(from_domain)?,
+        port: Port::new(input.port).map_err(from_domain)?,
+        username: Username::new(&input.username).map_err(from_domain)?,
+    };
+    let auth = match &input.auth {
+        AuthDto::Password { remember } => AuthMethod::Password {
+            remember: *remember,
+        },
+        AuthDto::Key {
+            path,
+            has_passphrase,
+        } => AuthMethod::PublicKey {
+            key: KeyRef::new(path).map_err(from_domain)?,
+            has_passphrase: *has_passphrase,
+        },
+    };
+    Session::new(
+        SessionId::new(id),
+        &input.name,
+        host,
+        auth,
+        input.folder.map(FolderId::new),
+    )
+    .map_err(from_domain)
+}
+
+/// Proyecta la sesión al DTO; `password_saved` ya es un booleano sin el secreto.
+fn to_dto(session: &Session, password_saved: bool) -> SessionDto {
+    let auth = match &session.auth {
+        AuthMethod::Password { remember } => AuthDto::Password {
+            remember: *remember,
+        },
+        AuthMethod::PublicKey {
+            key,
+            has_passphrase,
+        } => AuthDto::Key {
+            path: key.path().to_owned(),
+            has_passphrase: *has_passphrase,
+        },
+    };
+    SessionDto {
+        id: session.id.get(),
+        name: session.name.clone(),
+        host: session.host.hostname.as_str().to_owned(),
+        port: session.host.port.get(),
+        username: session.host.username.as_str().to_owned(),
+        auth,
+        folder: session.folder.map(FolderId::get),
+        password_saved,
+    }
+}
+
+/// Consulta el almacén solo para saber si hay secreto y lo suelta al instante.
+async fn to_dto_with_secrets<S: SecretStore>(
+    session: &Session,
+    secrets: &S,
+) -> Result<SessionDto, CommandError> {
+    let password_saved = secrets
+        .get(&SecretKey {
+            session: session.id,
+        })
+        .await
+        .map_err(|error| CommandError::from_session(error.into()))?
+        .is_some();
+    Ok(to_dto(session, password_saved))
+}
+
+fn to_folder(id: u64, name: &str, parent: Option<u64>) -> Result<Folder, CommandError> {
+    Folder::new(FolderId::new(id), name, parent.map(FolderId::new)).map_err(from_domain)
+}
+
+fn folder_dto(folder: &Folder) -> FolderDto {
+    FolderDto {
+        id: folder.id.get(),
+        name: folder.name.clone(),
+        parent: folder.parent.map(FolderId::get),
+    }
+}
+
+async fn list<R: SessionRepository, S: SecretStore>(
+    repository: R,
+    secrets: S,
+) -> Result<Vec<SessionDto>, CommandError> {
+    let sessions = repository.list_sessions().await.map_err(from_repository)?;
+    let mut result = Vec::with_capacity(sessions.len());
+    for session in &sessions {
+        result.push(to_dto_with_secrets(session, &secrets).await?);
+    }
+    Ok(result)
+}
+
+async fn create<R: SessionRepository, S: SecretStore>(
+    repository: R,
+    secrets: S,
+    input: SessionInput,
+    password: Option<Zeroizing<String>>,
+) -> Result<SessionDto, CommandError> {
+    let id = repository
+        .next_session_id()
+        .await
+        .map_err(from_repository)?;
+    let session = to_session(input, id.get())?;
+    let draft = SessionDraft {
+        name: session.name.clone(),
+        host: session.host.clone(),
+        auth: session.auth.clone(),
+        folder: session.folder,
+    };
+    let secret = password
+        .as_ref()
+        .map(|value| SecretString::new(value.as_str()));
+    let saved = CreateSession::new(repository, secrets)
+        .execute(draft, secret.as_ref())
+        .await
+        .map_err(CommandError::from_session)?;
+    let password_saved =
+        matches!(saved.auth, AuthMethod::Password { remember: true }) && secret.is_some();
+    Ok(to_dto(&saved, password_saved))
+}
+
+async fn update<R: SessionRepository, S: SecretStore>(
+    repository: R,
+    secrets: S,
+    id: u64,
+    input: SessionInput,
+    password: PasswordInput,
+) -> Result<(), CommandError> {
+    let session = to_session(input, id)?;
+    let change = match password {
+        PasswordInput::Keep => PasswordChange::Keep,
+        PasswordInput::Set { value } => PasswordChange::Set(SecretString::new(value.as_str())),
+        PasswordInput::Forget => PasswordChange::Forget,
+    };
+    UpdateSession::new(repository, secrets)
+        .execute(&session, change)
+        .await
+        .map_err(CommandError::from_session)
+}
+
+async fn duplicate<R: SessionRepository>(
+    repository: R,
+    id: u64,
+) -> Result<SessionDto, CommandError> {
+    let copy = DuplicateSession::new(repository)
+        .execute(SessionId::new(id))
+        .await
+        .map_err(CommandError::from_session)?;
+    Ok(to_dto(&copy, false))
+}
+
+async fn delete<R: SessionRepository, S: SecretStore>(
+    repository: R,
+    secrets: S,
+    id: u64,
+) -> Result<(), CommandError> {
+    DeleteSession::new(repository, secrets)
+        .execute(SessionId::new(id))
+        .await
+        .map_err(CommandError::from_session)
+}
+
+/// Lista las sesiones con un booleano que indica si su contraseña está guardada.
+#[tauri::command]
+pub async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionDto>, CommandError> {
+    list(state.repository.clone(), secret_store()).await
+}
+
+/// Crea una sesión y guarda la contraseña solo si el método lo pide.
+#[tauri::command]
+pub async fn create_session(
+    state: State<'_, AppState>,
+    input: SessionInput,
+    password: Option<Zeroizing<String>>,
+) -> Result<SessionDto, CommandError> {
+    create(state.repository.clone(), secret_store(), input, password).await
+}
+
+/// Actualiza una sesión y aplica el cambio de contraseña solicitado.
+#[tauri::command]
+pub async fn update_session(
+    state: State<'_, AppState>,
+    id: u64,
+    input: SessionInput,
+    password: PasswordInput,
+) -> Result<(), CommandError> {
+    update(
+        state.repository.clone(),
+        secret_store(),
+        id,
+        input,
+        password,
+    )
+    .await
+}
+
+/// Duplica una sesión sin copiar su secreto.
+#[tauri::command]
+pub async fn duplicate_session(
+    state: State<'_, AppState>,
+    id: u64,
+) -> Result<SessionDto, CommandError> {
+    duplicate(state.repository.clone(), id).await
+}
+
+/// Borra una sesión y su secreto asociado.
+#[tauri::command]
+pub async fn delete_session(state: State<'_, AppState>, id: u64) -> Result<(), CommandError> {
+    delete(state.repository.clone(), secret_store(), id).await
+}
+
+/// Lista las carpetas del gestor.
+#[tauri::command]
+pub async fn list_folders(state: State<'_, AppState>) -> Result<Vec<FolderDto>, CommandError> {
+    let folders = state
+        .repository
+        .list_folders()
+        .await
+        .map_err(from_repository)?;
+    Ok(folders.iter().map(folder_dto).collect())
+}
+
+/// Inserta o actualiza una carpeta; sin id se asigna el siguiente disponible.
+#[tauri::command]
+pub async fn save_folder(
+    state: State<'_, AppState>,
+    id: Option<u64>,
+    name: String,
+    parent: Option<u64>,
+) -> Result<FolderDto, CommandError> {
+    let id = match id {
+        Some(id) => id,
+        None => state
+            .repository
+            .next_folder_id()
+            .await
+            .map_err(from_repository)?
+            .get(),
+    };
+    let folder = to_folder(id, &name, parent)?;
+    state
+        .repository
+        .save_folder(&folder)
+        .await
+        .map_err(from_repository)?;
+    Ok(folder_dto(&folder))
+}
+
+/// Borra una carpeta; el repositorio decide cómo afecta a sus hijas y sesiones.
+#[tauri::command]
+pub async fn delete_folder(state: State<'_, AppState>, id: u64) -> Result<(), CommandError> {
+    state
+        .repository
+        .delete_folder(FolderId::new(id))
+        .await
+        .map_err(from_repository)
+}
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::sync::Arc;
-    use std::task::{Context, Poll, Waker};
 
     use tuki_adapters::secret_store::InMemorySecretStore;
     use tuki_adapters::session_repository::SqliteSessionRepository;
@@ -20,12 +359,11 @@ mod tests {
     use super::*;
 
     fn block_on<F: Future>(future: F) -> F::Output {
-        let mut context = Context::from_waker(Waker::noop());
-        let mut future = std::pin::pin!(future);
-        match future.as_mut().poll(&mut context) {
-            Poll::Ready(output) => output,
-            Poll::Pending => panic!("future pending"),
-        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
     }
 
     #[derive(Clone, Default)]
@@ -102,20 +440,13 @@ mod tests {
     #[test]
     fn should_hide_stored_password_when_mapping_session_to_dto() {
         let secrets = InMemorySecretStore::default();
-        let stored = session(
-            7,
-            AuthMethod::Password {
-                remember: true,
+        let stored = session(7, AuthMethod::Password { remember: true });
+        block_on(secrets.set(
+            &SecretKey {
+                session: SessionId::new(7),
             },
-        );
-        block_on(
-            secrets.set(
-                &SecretKey {
-                    session: SessionId::new(7),
-                },
-                &SecretString::new("stored-pw"),
-            ),
-        )
+            &SecretString::new("stored-pw"),
+        ))
         .unwrap();
 
         let dto = block_on(to_dto_with_secrets(&stored, &secrets)).unwrap();
@@ -143,7 +474,10 @@ mod tests {
     #[test]
     fn should_map_every_session_error_when_command_fails() {
         let kind = |error| CommandError::from_session(error).kind().to_owned();
-        assert_eq!(kind(SessionError::Domain(DomainError::EmptyName)), "invalid_input");
+        assert_eq!(
+            kind(SessionError::Domain(DomainError::EmptyName)),
+            "invalid_input"
+        );
         assert_eq!(
             kind(SessionError::Repository(RepositoryError::NotFound)),
             "not_found"

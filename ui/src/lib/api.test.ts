@@ -97,7 +97,7 @@ const sessionRaw = {
   passwordSaved: true,
 };
 
-const sessionDto: SessionDto = { ...sessionInput, id: 1, passwordSaved: true };
+const sessionDto: SessionDto = { ...sessionInput, folder: null, id: 1, passwordSaved: true };
 
 const folderRaw = { id: 2, name: "producción", parent: null };
 const folderDto: FolderDto = folderRaw;

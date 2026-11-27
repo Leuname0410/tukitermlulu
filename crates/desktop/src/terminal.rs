@@ -9,36 +9,50 @@ use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::known_hosts::FileHostKeyVerifier;
 use tuki_adapters::secret_store::KeyringSecretStore;
+use tuki_adapters::session_repository::SqliteSessionRepository;
 use tuki_adapters::ssh_transport::RusshTransport;
 use tuki_application::connect_session::{
     ConnectError, ConnectOutcome, ConnectRequest, ConnectSession,
 };
 use tuki_application::connect_tab::{ConnectTab, TabId, TabPassphrases};
+use tuki_application::session_errors::SessionError;
 use tuki_core::auth::{AuthMethod, KeyRef};
 use tuki_core::host::{Host, Hostname, Port, Username};
-use tuki_core::port_errors::{KeyError, TransportError};
+use tuki_core::port_errors::{KeyError, RepositoryError, TransportError};
 use tuki_core::ports::{
-    ChannelId, ConnectionId, HostKeyFingerprint, PtySink, PtySize, SecretString, SshTransport,
+    ChannelId, ConnectionId, HostKeyFingerprint, PtySink, PtySize, SecretString, SessionRepository,
+    SshTransport,
 };
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
-/// Estado compartido por los comandos: transporte, known_hosts y passphrases por pestaña.
+/// Estado compartido por los comandos: transporte, known_hosts, passphrases y repositorio.
 pub struct AppState {
     transport: RusshTransport,
     known_hosts_path: PathBuf,
     passphrases: TabPassphrases,
+    pub(crate) repository: SqliteSessionRepository,
 }
 
 impl AppState {
     /// Crea el estado de la composition root.
-    pub(crate) fn new(transport: RusshTransport, known_hosts_path: PathBuf) -> Self {
+    pub(crate) fn new(
+        transport: RusshTransport,
+        known_hosts_path: PathBuf,
+        repository: SqliteSessionRepository,
+    ) -> Self {
         Self {
             transport,
             known_hosts_path,
             passphrases: TabPassphrases::new(),
+            repository,
         }
     }
+}
+
+/// Construye el almacén de secretos del sistema en un único punto de la composición.
+pub(crate) fn secret_store() -> KeyringSecretStore {
+    KeyringSecretStore::new("tukitermlulu")
 }
 
 /// Método de autenticación descrito por la UI; nunca incluye secretos.
@@ -53,6 +67,7 @@ pub enum AuthArgs {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectArgs {
+    session_id: Option<u64>,
     host: String,
     port: u16,
     username: String,
@@ -68,6 +83,7 @@ impl fmt::Debug for ConnectArgs {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ConnectArgs")
+            .field("session_id", &self.session_id)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("username", &self.username)
@@ -94,8 +110,8 @@ pub enum ConnectResponse {
 /// Error de comando serializable: mensajes fijos del dominio, sin secretos.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CommandError {
-    kind: &'static str,
+pub(crate) struct CommandError {
+    pub(crate) kind: &'static str,
     message: String,
     fingerprint: Option<String>,
 }
@@ -151,8 +167,34 @@ impl CommandError {
         }
     }
 
+    /// Devuelve la categoría del error para los tests de mapeo.
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> &'static str {
+        self.kind
+    }
+
     fn invalid_input(error: impl fmt::Display) -> Self {
         Self::new("invalid_input", error)
+    }
+
+    fn not_found(error: impl fmt::Display) -> Self {
+        Self::new("not_found", error)
+    }
+
+    /// Traduce los fallos del gestor de sesiones sin filtrar secretos.
+    pub(crate) fn from_session(error: SessionError) -> Self {
+        let message = error.to_string();
+        let kind = match &error {
+            SessionError::Domain(_) => "invalid_input",
+            SessionError::Repository(RepositoryError::NotFound) => "not_found",
+            SessionError::Repository(RepositoryError::Conflict) => "conflict",
+            SessionError::Repository(RepositoryError::Io) | SessionError::Secret(_) => "io",
+        };
+        Self {
+            kind,
+            message,
+            fingerprint: None,
+        }
     }
 
     fn from_connect(error: ConnectError) -> Self {
@@ -196,27 +238,49 @@ type DomainParts = (
     Option<HostKeyFingerprint>,
 );
 
+/// Carga la sesión guardada cuando el cliente envía `sessionId`; ignora el resto de args.
+async fn session_for_connect(
+    repository: &SqliteSessionRepository,
+    args: &ConnectArgs,
+) -> Result<Option<Session>, CommandError> {
+    let Some(id) = args.session_id else {
+        return Ok(None);
+    };
+    let session = repository
+        .get_session(SessionId::new(id))
+        .await
+        .map_err(|error| CommandError::from_session(error.into()))?;
+    session
+        .ok_or_else(|| CommandError::not_found("session not found"))
+        .map(Some)
+}
+
 /// Valida los DTOs sin tocar la red y copia los secretos a tipos envueltos.
-fn to_domain(args: &ConnectArgs) -> Result<DomainParts, CommandError> {
-    let host = Host {
-        hostname: Hostname::new(&args.host).map_err(CommandError::invalid_input)?,
-        port: Port::new(args.port).map_err(CommandError::invalid_input)?,
-        username: Username::new(&args.username).map_err(CommandError::invalid_input)?,
+fn to_domain(args: &ConnectArgs, stored: Option<Session>) -> Result<DomainParts, CommandError> {
+    let session = match stored {
+        Some(session) => session,
+        None => {
+            let host = Host {
+                hostname: Hostname::new(&args.host).map_err(CommandError::invalid_input)?,
+                port: Port::new(args.port).map_err(CommandError::invalid_input)?,
+                username: Username::new(&args.username).map_err(CommandError::invalid_input)?,
+            };
+            let auth = match &args.auth {
+                AuthArgs::Password { remember } => AuthMethod::Password {
+                    remember: *remember,
+                },
+                AuthArgs::Key {
+                    path,
+                    has_passphrase,
+                } => AuthMethod::PublicKey {
+                    key: KeyRef::new(path).map_err(CommandError::invalid_input)?,
+                    has_passphrase: *has_passphrase,
+                },
+            };
+            Session::new(SessionId::new(0), &args.host, host, auth, None)
+                .map_err(CommandError::invalid_input)?
+        }
     };
-    let auth = match &args.auth {
-        AuthArgs::Password { remember } => AuthMethod::Password {
-            remember: *remember,
-        },
-        AuthArgs::Key {
-            path,
-            has_passphrase,
-        } => AuthMethod::PublicKey {
-            key: KeyRef::new(path).map_err(CommandError::invalid_input)?,
-            has_passphrase: *has_passphrase,
-        },
-    };
-    let session = Session::new(SessionId::new(0), &args.host, host, auth, None)
-        .map_err(CommandError::invalid_input)?;
     let pty_size = PtySize::new(args.rows, args.cols).map_err(CommandError::invalid_input)?;
     let approved = args
         .approved_fingerprint
@@ -244,13 +308,14 @@ pub async fn connect(
     on_output: Channel<InvokeResponseBody>,
     on_closed: Channel<TerminalClosed>,
 ) -> Result<ConnectResponse, CommandError> {
-    let (session, pty_size, password, passphrase, approved_fingerprint) = to_domain(&args)?;
+    let stored = session_for_connect(&state.repository, &args).await?;
+    let (session, pty_size, password, passphrase, approved_fingerprint) = to_domain(&args, stored)?;
     drop(args);
     let connect = ConnectSession::new(
         state.transport.clone(),
         FileHostKeyVerifier::new(state.known_hosts_path.clone()),
         RusshKeyLoader,
-        KeyringSecretStore::new("tukitermlulu"),
+        secret_store(),
     );
     let use_case = ConnectTab::new(connect, &state.passphrases);
     let request = ConnectRequest {
@@ -332,16 +397,27 @@ pub async fn disconnect(
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::sync::{Arc, Mutex};
 
     use tauri::ipc::{Channel, InvokeResponseBody};
+    use tuki_adapters::session_repository::SqliteSessionRepository;
     use tuki_core::port_errors::{HostKeyError, KeyError, SecretError, TransportError};
     use tuki_core::ports::{ChannelId, ConnectionId, HostKeyFingerprint, PtySize};
 
     use super::*;
 
+    fn block_on<F: Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
     fn args() -> ConnectArgs {
         ConnectArgs {
+            session_id: None,
             host: "example.com".to_owned(),
             port: 22,
             username: "alice".to_owned(),
@@ -393,17 +469,21 @@ mod tests {
     fn should_reject_invalid_input_when_building_domain_request() {
         let mut invalid_port = args();
         invalid_port.port = 0;
-        assert!(matches!(to_domain(&invalid_port), Err(error) if error.kind == "invalid_input"));
+        assert!(
+            matches!(to_domain(&invalid_port, None), Err(error) if error.kind == "invalid_input")
+        );
 
         let mut empty_host = args();
         empty_host.host.clear();
-        assert!(matches!(to_domain(&empty_host), Err(error) if error.kind == "invalid_input"));
+        assert!(
+            matches!(to_domain(&empty_host, None), Err(error) if error.kind == "invalid_input")
+        );
 
         let mut zero_rows = args();
         zero_rows.rows = 0;
-        assert!(matches!(to_domain(&zero_rows), Err(error) if error.kind == "invalid_input"));
+        assert!(matches!(to_domain(&zero_rows, None), Err(error) if error.kind == "invalid_input"));
 
-        let (session, size, password, passphrase, approved) = to_domain(&args()).unwrap();
+        let (session, size, password, passphrase, approved) = to_domain(&args(), None).unwrap();
         assert_eq!(session.host.port.get(), 22);
         assert_eq!(size, PtySize { rows: 24, cols: 80 });
         assert_eq!(
@@ -415,6 +495,47 @@ mod tests {
             Some("pass-secret".to_owned())
         );
         assert!(approved.is_none());
+    }
+
+    #[test]
+    fn should_load_stored_session_when_connecting_with_session_id() {
+        let repository = SqliteSessionRepository::in_memory().unwrap();
+        let stored = Session::new(
+            SessionId::new(7),
+            "prod",
+            Host {
+                hostname: Hostname::new("guardado.example").unwrap(),
+                port: Port::new(2222).unwrap(),
+                username: Username::new("bob").unwrap(),
+            },
+            AuthMethod::Password { remember: true },
+            None,
+        )
+        .unwrap();
+        block_on(repository.save_session(&stored)).unwrap();
+
+        let mut request = args();
+        request.session_id = Some(7);
+        request.host.clear();
+        request.port = 0;
+        request.auth = AuthArgs::Key {
+            path: String::new(),
+            has_passphrase: false,
+        };
+        let loaded = block_on(session_for_connect(&repository, &request))
+            .unwrap()
+            .unwrap();
+        let (resolved, _, _, _, _) = to_domain(&request, Some(loaded)).unwrap();
+        assert_eq!(resolved.id, SessionId::new(7));
+        assert_eq!(resolved.host.hostname.as_str(), "guardado.example");
+
+        request.session_id = Some(99);
+        assert_eq!(
+            block_on(session_for_connect(&repository, &request))
+                .unwrap_err()
+                .kind(),
+            "not_found"
+        );
     }
 
     #[test]

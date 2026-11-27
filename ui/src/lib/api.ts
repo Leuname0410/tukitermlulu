@@ -5,6 +5,7 @@ export type AuthArgs =
   | { kind: "key"; path: string; hasPassphrase: boolean };
 
 export interface ConnectArgs {
+  sessionId?: number;
   host: string;
   port: number;
   username: string;
@@ -21,6 +22,47 @@ export type ConnectResponse =
   | { kind: "needs_host_key_approval"; fingerprint: string }
   | { kind: "needs_password" }
   | { kind: "needs_passphrase" };
+
+export type AuthDto =
+  | { kind: "password"; remember: boolean }
+  | { kind: "key"; path: string; hasPassphrase: boolean };
+
+export interface SessionInput {
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  auth: AuthDto;
+  folder?: number | null;
+}
+
+export type PasswordInput =
+  | { kind: "keep" }
+  | { kind: "set"; value: string }
+  | { kind: "forget" };
+
+export interface SessionDto {
+  id: number;
+  name: string;
+  host: string;
+  port: number;
+  username: string;
+  auth: AuthDto;
+  folder: number | null;
+  passwordSaved: boolean;
+}
+
+export interface FolderDto {
+  id: number;
+  name: string;
+  parent: number | null;
+}
+
+export interface FolderInput {
+  id?: number;
+  name: string;
+  parent?: number | null;
+}
 
 export interface CommandError {
   kind: string;
@@ -51,6 +93,80 @@ function readNumber(value: unknown, field: string): number {
     throw new Error(`El backend devolvió ${field} inválido`);
   }
   return value;
+}
+
+function readString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`El backend devolvió ${field} inválido`);
+  }
+  return value;
+}
+
+function readBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`El backend devolvió ${field} inválido`);
+  }
+  return value;
+}
+
+function readOptionalNumber(value: unknown, field: string): number | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return readNumber(value, field);
+}
+
+function parseAuth(value: unknown): AuthDto {
+  const auth = asRecord(value);
+  switch (auth.kind) {
+    case "password":
+      return { kind: "password", remember: readBoolean(auth.remember, "remember") };
+    case "key":
+      return {
+        kind: "key",
+        path: readString(auth.path, "path"),
+        hasPassphrase: readBoolean(auth.hasPassphrase, "hasPassphrase"),
+      };
+    default:
+      throw new Error("El backend devolvió un método de autenticación desconocido");
+  }
+}
+
+function parseSessionDto(value: unknown): SessionDto {
+  const session = asRecord(value);
+  return {
+    id: readNumber(session.id, "id"),
+    name: readString(session.name, "name"),
+    host: readString(session.host, "host"),
+    port: readNumber(session.port, "port"),
+    username: readString(session.username, "username"),
+    auth: parseAuth(session.auth),
+    folder: readOptionalNumber(session.folder, "folder"),
+    passwordSaved: readBoolean(session.passwordSaved, "passwordSaved"),
+  };
+}
+
+function parseSessionList(value: unknown): SessionDto[] {
+  if (!Array.isArray(value)) {
+    throw new Error("El backend devolvió una lista de sesiones inválida");
+  }
+  return value.map(parseSessionDto);
+}
+
+function parseFolderDto(value: unknown): FolderDto {
+  const folder = asRecord(value);
+  return {
+    id: readNumber(folder.id, "id"),
+    name: readString(folder.name, "name"),
+    parent: readOptionalNumber(folder.parent, "parent"),
+  };
+}
+
+function parseFolderList(value: unknown): FolderDto[] {
+  if (!Array.isArray(value)) {
+    throw new Error("El backend devolvió una lista de carpetas inválida");
+  }
+  return value.map(parseFolderDto);
 }
 
 function parseConnectResponse(value: unknown): ConnectResponse {
@@ -128,6 +244,58 @@ export async function disconnect(connectionId: number): Promise<void> {
 /** Olvida los secretos retenidos por el backend para la pestaña. */
 export async function closeTab(tabId: number): Promise<void> {
   await invoke("close_tab", { tabId });
+}
+
+/** Lista las sesiones guardadas sin exponer sus contraseñas. */
+export async function listSessions(): Promise<SessionDto[]> {
+  return parseSessionList(await invoke<unknown>("list_sessions"));
+}
+
+/** Crea una sesión; la contraseña se envía solo cuando el usuario la tecleó. */
+export async function createSession(input: SessionInput, password?: string): Promise<SessionDto> {
+  return parseSessionDto(
+    await invoke<unknown>("create_session", { input, password: password ?? null }),
+  );
+}
+
+/** Actualiza una sesión e indica qué hacer con la contraseña guardada. */
+export async function updateSession(
+  id: number,
+  input: SessionInput,
+  password: PasswordInput,
+): Promise<void> {
+  await invoke("update_session", { id, input, password });
+}
+
+/** Duplica una sesión sin copiar secretos. */
+export async function duplicateSession(id: number): Promise<SessionDto> {
+  return parseSessionDto(await invoke<unknown>("duplicate_session", { id }));
+}
+
+/** Borra una sesión y su secreto asociado. */
+export async function deleteSession(id: number): Promise<void> {
+  await invoke("delete_session", { id });
+}
+
+/** Lista las carpetas del gestor de sesiones. */
+export async function listFolders(): Promise<FolderDto[]> {
+  return parseFolderList(await invoke<unknown>("list_folders"));
+}
+
+/** Inserta o actualiza una carpeta; sin id se asigna el siguiente disponible. */
+export async function saveFolder(folder: FolderInput): Promise<FolderDto> {
+  return parseFolderDto(
+    await invoke<unknown>("save_folder", {
+      id: folder.id ?? null,
+      name: folder.name,
+      parent: folder.parent ?? null,
+    }),
+  );
+}
+
+/** Borra una carpeta y aplica las reglas del repositorio a sus descendientes. */
+export async function deleteFolder(id: number): Promise<void> {
+  await invoke("delete_folder", { id });
 }
 
 /** Estrecha un error IPC; Option::None se serializa como fingerprint: null. */
