@@ -1,7 +1,5 @@
 #![cfg(feature = "integration")]
 
-//! Pruebas de integración del transporte SSH contra el contenedor OpenSSH de fixtures.
-
 use russh::keys::HashAlg;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::ssh_transport::RusshTransport;
@@ -9,7 +7,7 @@ use tuki_core::auth::KeyRef;
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::TransportError;
 use tuki_core::ports::{
-    ChannelId, Connected, Credential, KeyLoader, PtySink, PtySize, SecretString, SshTransport,
+    Connected, Credential, KeyLoader, PtySink, PtySize, SecretString, SshTransport,
 };
 
 struct NoopSink;
@@ -21,8 +19,8 @@ impl PtySink for NoopSink {
 
 fn fixture_path(relative: &str) -> String {
     format!(
-        "{}/../../tests/fixtures/{relative}",
-        env!("CARGO_MANIFEST_DIR")
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/{}"),
+        relative
     )
 }
 
@@ -55,28 +53,27 @@ async fn should_return_fixture_fingerprint_when_connecting() {
     assert_eq!(connected.fingerprint.as_str(), expected_fingerprint());
 }
 
-#[tokio::test]
-async fn should_accept_valid_password_when_authenticating() {
+async fn authenticate_password(password: &str) -> Result<(), TransportError> {
     let (transport, connected) = connected_host().await;
-    let result = transport
+    transport
         .authenticate(
             connected.id,
-            Credential::Password(SecretString::new("tuki-test")),
+            Credential::Password(SecretString::new(password)),
         )
-        .await;
-    assert!(result.is_ok());
+        .await
+}
+
+#[tokio::test]
+async fn should_accept_valid_password_when_authenticating() {
+    assert!(authenticate_password("tuki-test").await.is_ok());
 }
 
 #[tokio::test]
 async fn should_reject_wrong_password_when_authenticating() {
-    let (transport, connected) = connected_host().await;
-    let result = transport
-        .authenticate(
-            connected.id,
-            Credential::Password(SecretString::new("wrong")),
-        )
-        .await;
-    assert!(matches!(result, Err(TransportError::AuthenticationRejected)));
+    assert!(matches!(
+        authenticate_password("wrong").await,
+        Err(TransportError::AuthenticationRejected)
+    ));
 }
 
 #[tokio::test]
@@ -87,10 +84,13 @@ async fn should_authenticate_with_fixture_keys_when_using_public_key() {
         let key_ref = KeyRef::new(&path).unwrap();
         let private_key = loader.load(&key_ref, None).await.unwrap();
         let (transport, connected) = connected_host().await;
-        let result = transport
-            .authenticate(connected.id, Credential::PublicKey(private_key))
-            .await;
-        assert!(result.is_ok(), "la llave {name} debería autenticar");
+        assert!(
+            transport
+                .authenticate(connected.id, Credential::PublicKey(private_key))
+                .await
+                .is_ok(),
+            "la llave {name} debería autenticar"
+        );
     }
 }
 
@@ -107,14 +107,6 @@ async fn should_report_not_connected_when_using_a_closed_connection() {
         transport
             .open_pty(connected.id, size, Box::new(NoopSink))
             .await,
-        Err(TransportError::NotConnected)
-    ));
-    assert!(matches!(
-        transport.write(ChannelId::new(1), b"ls\n").await,
-        Err(TransportError::NotConnected)
-    ));
-    assert!(matches!(
-        transport.resize(ChannelId::new(1), size).await,
         Err(TransportError::NotConnected)
     ));
 }

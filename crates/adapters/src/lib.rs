@@ -4,3 +4,4 @@ pub mod key_file_store;
 pub mod key_loader;
 pub mod known_hosts;
 pub mod secret_store;
+pub mod ssh_transport;
