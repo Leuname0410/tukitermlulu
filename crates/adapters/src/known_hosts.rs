@@ -39,13 +39,21 @@ impl FileHostKeyVerifier {
     }
 }
 
-/// Las huellas almacenadas deben tener el prefijo `SHA256:`.
+/// Las huellas almacenadas deben ser `SHA256:` seguido de caracteres base64.
 fn validate(fingerprint: &HostKeyFingerprint) -> Result<(), HostKeyError> {
-    if fingerprint.as_str().starts_with("SHA256:") {
-        Ok(())
-    } else {
-        Err(HostKeyError::InvalidFingerprint)
+    let payload = fingerprint
+        .as_str()
+        .strip_prefix("SHA256:")
+        .ok_or(HostKeyError::InvalidFingerprint)?;
+    // Solo base64: evita que un salto de línea o un espacio inyecten entradas.
+    if payload.is_empty()
+        || !payload.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || byte == b'+' || byte == b'/' || byte == b'='
+        })
+    {
+        return Err(HostKeyError::InvalidFingerprint);
     }
+    Ok(())
 }
 
 /// Clave de entrada: hostname en minúsculas y puerto entre corchetes.
