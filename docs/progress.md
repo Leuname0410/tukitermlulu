@@ -44,6 +44,23 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-19 | APPROVE | 1 | 5 | rama `feat/T-19-session-tree` desde T-18c. `SessionTree.tsx` → `SessionTreeView.tsx` (colisión de mayúsculas en Windows). MINOR: carpetas en ciclo no se muestran |
 | T-20 | APPROVE | 1 | 7 | rama `feat/T-20-dialogs` desde T-19. Autorizado tocar `App.tsx`/`TabsView.tsx` para el callback de actualizar contraseña. MINOR: la contraseña nueva espera en un `Map` de `App` hasta confirmar la conexión |
 
+| T-21 | APPROVE | 1 | 4 (+lock) | rama `feat/T-21-sftp-adapter` desde T-20. `russh-sftp` 4.0.0 sobre la conexión de la terminal. MINOR: carrera al abrir la sesión SFTP deja un canal extra; caché no se limpia al cerrar |
+| T-22a | APPROVE | 2 | 4 | rama `feat/T-22a-sftp-transfers` desde T-21. Puerto `FileTransfer`, bloques de 256 KiB. R1 MAJOR: `.part` truncaba archivos ajenos → creación exclusiva. Pendiente manual: 1 GB |
+| T-22b | APPROVE | 1 | 2 | rama `feat/T-22b-transfer-queue` desde T-22a. Cola FIFO + `local_download_target` anti traversal. MINOR: `CON .txt` no se detecta |
+| T-22c | APPROVE | 1 | 5 | rama `feat/T-22c-transfer-worker` desde T-22b. Worker único, evento `transfers` limitado a 100 ms. Diff ~880 líneas |
+| T-23a | APPROVE | 1 | 3 | rama `feat/T-23a-sftp-home-tdd` (rehecha con `test:` antes de `feat:`; la rama `feat/T-23a-sftp-home` original sobra). MINOR: un test de integración falló una vez al conectar (posible flaky) |
+| T-23b | APPROVE | 1 | 4 | rama `feat/T-23b-sftp-commands` desde T-23a. 5 comandos SFTP |
+| T-23c | APPROVE | 1 | 5 | rama `feat/T-23c-sftp-sidebar` desde T-23b. Sidebar a la izquierda al conectar (D1) |
+| T-24a | APPROVE | 1 | 5 | rama `feat/T-24a-drop-upload` desde T-23c. Soltar del SO → subir. T-24b (arrastrar al SO) fuera de v1 (opción b). MINOR: carpeta detectada por texto de error. Pendiente manual: Explorer/Finder/Linux |
+| T-25 | APPROVE | 1 | 4 | rama `feat/T-25-split-pane` desde T-24a. Ancho por sesión en `localStorage` |
+| T-26a | APPROVE | 1 | 7 | rama `feat/T-26a-sftp-chmod` desde T-25. `chmod` + `downloads_dir` |
+| T-26b | APPROVE | 1 | 5 | rama `feat/T-26b-sftp-menu` desde T-26a. Menú contextual, permisos y lista de transferencias. 126 tests UI. MINOR: renombrar en la raíz construye una ruta relativa |
+
+## F5: cerrada (2026-11-26)
+T-21 → T-22a → T-22b → T-22c → T-23a → T-23b → T-23c → T-24a → T-25 → T-26a → T-26b. `feat/T-26b-sftp-menu` contiene F0–F5 (sin merge a `main`).
+Pendiente humano: `just dev`: sidebar al conectar, navegar, soltar archivos desde el SO, redimensionar, menú contextual (descargar a Descargas, renombrar, borrar, nueva carpeta, permisos), cancelar una transferencia, 1 GB sin crecer la memoria.
+Siguiente: F6 según `docs/F6-plan.md` (ADR-006 pendiente de aprobación).
+
 ## F4: cerrada (2026-11-26)
 T-18 → T-18b → T-18c → T-19 → T-20. `feat/T-20-dialogs` contiene F0–F4.
 Pendiente humano: `just dev`: crear/editar/duplicar/borrar sesiones; conectar desde el árbol con "recordar"; pegar passphrase con Ctrl/Cmd+V y menú contextual; contraseña errónea guardada → diálogo con "Recordar" la actualiza.
