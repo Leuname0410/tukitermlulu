@@ -1,5 +1,92 @@
 //! Detección de la shell remota y construcción de la línea de integración OSC 7.
 
+use tuki_core::ports::ExecOutput;
+
+/// Shell remota detectada a partir de la sonda.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    Bash,
+    Zsh,
+    Fish,
+    PowerShell,
+    Cmd,
+    Unknown,
+}
+
+/// Sonda ejecutada por un canal `exec` aparte, sin tocar el PTY del usuario.
+pub const PROBE_COMMAND: &str = "echo %COMSPEC%::$PSVersionTable::$0::$SHELL";
+
+/// Marcador único que delimita el final de la inyección silenciosa.
+pub const READY_MARKER: &[u8] = b"\x1b]777;tuki-ready\x07";
+
+/// Clasifica la shell a partir de stdout y stderr de la sonda.
+pub fn classify(output: &ExecOutput) -> ShellKind {
+    let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+    let combined = format!("{stdout}\n{stderr}");
+
+    if combined.contains("cmd.exe") && !combined.contains("::$0") {
+        return ShellKind::Cmd;
+    }
+    if combined.contains("%comspec%")
+        && (combined.contains("psversion") || combined.contains("system.collections.hashtable"))
+    {
+        return ShellKind::PowerShell;
+    }
+    if stderr.contains("fish:") {
+        return ShellKind::Fish;
+    }
+
+    // En la sonda, los dos últimos valores separados por `::` son `$0` y `$SHELL`.
+    let tail = |suffix: &str| {
+        stdout
+            .rsplit("::")
+            .filter(|part| !part.is_empty() && !part.contains('%'))
+            .any(|part| part.trim_end().ends_with(suffix))
+    };
+    if tail("zsh") {
+        return ShellKind::Zsh;
+    }
+    if tail("bash") {
+        return ShellKind::Bash;
+    }
+    ShellKind::Unknown
+}
+
+/// Construye la línea de integración para la shell dada; `Unknown` no se inyecta.
+pub fn integration_line(shell: ShellKind) -> Option<String> {
+    let line = match shell {
+        ShellKind::Bash => concat!(
+            r#" __tuki_osc7() { printf '\033]7;file://%s%s\007' "${HOSTNAME:-}" "$PWD"; }"#,
+            r#"; export PROMPT_COMMAND="__tuki_osc7${PROMPT_COMMAND:+;$PROMPT_COMMAND}""#,
+            r#"; __tuki_osc7; history -d $((HISTCMD-1)) 2>/dev/null; printf '\r\033[K'; printf '\033]777;tuki-ready\007'"#,
+            "\r",
+        ),
+        ShellKind::Zsh => concat!(
+            r#" setopt HIST_IGNORE_SPACE; __tuki_osc7() { printf '\033]7;file://%s%s\007' "${HOST:-}" "$PWD"; }"#,
+            r#"; precmd_functions+=(__tuki_osc7); __tuki_osc7; printf '\r\033[K'; printf '\033]777;tuki-ready\007'"#,
+            "\r",
+        ),
+        ShellKind::Fish => concat!(
+            r#" function __tuki_osc7 --on-variable PWD; printf '\e]7;file://%s%s\a' (hostname) $PWD; end"#,
+            r#"; __tuki_osc7; printf '\r\e[K'; printf '\e]777;tuki-ready\a'"#,
+            "\r",
+        ),
+        ShellKind::PowerShell => concat!(
+            r#" Write-Host -NoNewline "`e]7;file:///$($PWD.Path.Replace('\','/'))`a"; $tukiOriginalPrompt = $function:prompt; function global:prompt { Write-Host -NoNewline "`e]7;file:///$($PWD.Path.Replace('\','/'))`a"; & $tukiOriginalPrompt }"#,
+            r#"; Clear-History -Count 1 -Newest; Write-Host -NoNewline "`r`e[K`e]777;tuki-ready`a""#,
+            "\r",
+        ),
+        ShellKind::Cmd => concat!(
+            r#"echo $E]7;file:///$P$E&prompt $E]7;file:///$P$E\$P$G&echo $E[K&echo $E]777;tuki-ready"#,
+            "\u{7}",
+            "\r",
+        ),
+        ShellKind::Unknown => return None,
+    };
+    Some(line.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -20,8 +107,9 @@ mod tests {
     const BASH: &str = "%COMSPEC%::::/bin/bash::/bin/bash\n";
     const ZSH: &str = "%COMSPEC%::::/usr/local/bin/zsh::/bin/zsh\n";
     const FISH_STDOUT: &str = "%COMSPEC%::::/usr/bin/fish::/usr/bin/fish\n";
-    const FISH_STDERR: &str = "fish: Unknown variable: PSVersionTable\n";
-    const PWSH: &str = "%COMSPEC%::Name Value\r\nPSVersion 7.4.0\r\nSystem.Collections.Hashtable\r\n";
+    const FISH_STDERR: &str = "fish: $0 is not valid in this context\n";
+    const PWSH: &str =
+        "%COMSPEC%::Name Value\r\nPSVersion 7.4.0\r\nSystem.Collections.Hashtable\r\n";
     const CMD: &str = "C:\\Windows\\System32\\cmd.exe::$PSVersionTable::$SHELL\r\n";
     const ASH: &str = "%COMSPEC%::::/bin/ash::/bin/ash\n";
 

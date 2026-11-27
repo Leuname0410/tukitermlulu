@@ -529,7 +529,7 @@ mod tests {
         let mut mock = MockSshTransport::new();
         mock.expect_exec()
             .once()
-            .withf(|conn, command| *conn == ConnectionId::new(6) && *command == "echo hola")
+            .withf(|conn, command| *conn == ConnectionId::new(6) && command == "echo hola")
             .returning(|_, _| {
                 Box::pin(async {
                     Ok(ExecOutput {

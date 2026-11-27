@@ -10,7 +10,7 @@ use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tuki_adapters::key_loader::RusshKeyLoader;
 use tuki_adapters::ssh_transport::RusshTransport;
-use tuki_application::shell_integration::{classify, ShellKind, PROBE_COMMAND};
+use tuki_application::shell_integration::{PROBE_COMMAND, ShellKind, classify};
 use tuki_core::auth::KeyRef;
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::TransportError;
@@ -482,7 +482,10 @@ async fn should_classify_probe_as_unknown_when_remote_shell_is_ash() {
 async fn should_cap_output_at_64_kib_when_exec_writes_more() {
     let (transport, connected) = authenticated_host().await;
     let output = transport
-        .exec(connected.id, "dd if=/dev/zero bs=1024 count=128 2>/dev/null")
+        .exec(
+            connected.id,
+            "dd if=/dev/zero bs=1024 count=128 2>/dev/null",
+        )
         .await
         .unwrap();
     assert_eq!(output.stdout.len(), 64 * 1024);

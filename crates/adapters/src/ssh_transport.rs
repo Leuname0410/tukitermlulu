@@ -13,9 +13,17 @@ use tokio::sync::Mutex;
 use tuki_core::host::Host;
 use tuki_core::port_errors::TransportError;
 use tuki_core::ports::{
-    ChannelId, Connected, ConnectionId, Credential, HostKeyFingerprint, PrivateKey, PtySink,
-    PtySize, SshTransport,
+    ChannelId, Connected, ConnectionId, Credential, ExecOutput, HostKeyFingerprint, PrivateKey,
+    PtySink, PtySize, SshTransport,
 };
+
+/// Tope de bytes retenidos por cada flujo de un `exec`; el resto se descarta.
+const EXEC_OUTPUT_LIMIT: usize = 64 * 1024;
+
+fn append_capped(buffer: &mut Vec<u8>, data: &[u8]) {
+    let available = EXEC_OUTPUT_LIMIT.saturating_sub(buffer.len());
+    buffer.extend_from_slice(&data[..data.len().min(available)]);
+}
 
 struct FingerprintHandler {
     fingerprint: Arc<Mutex<Option<String>>>,
@@ -283,6 +291,50 @@ impl SshTransport for RusshTransport {
         });
 
         Ok(channel_id)
+    }
+
+    async fn exec(&self, conn: ConnectionId, command: &str) -> Result<ExecOutput, TransportError> {
+        let mut channel = {
+            let connection = {
+                let connections = self.inner.connections.lock().await;
+                Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
+            };
+            let stored = connection.lock().await;
+            stored
+                .handle
+                .channel_open_session()
+                .await
+                .map_err(|_| TransportError::Io)?
+        };
+        channel
+            .exec(true, command)
+            .await
+            .map_err(|_| TransportError::Io)?;
+
+        let collect = async {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut status = None;
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    ChannelMsg::Data { data } => append_capped(&mut stdout, &data),
+                    ChannelMsg::ExtendedData { data, ext: 1 } => {
+                        append_capped(&mut stderr, &data);
+                    }
+                    ChannelMsg::ExitStatus { exit_status } => status = Some(exit_status),
+                    ChannelMsg::Close => break,
+                    _ => {}
+                }
+            }
+            ExecOutput {
+                stdout,
+                stderr,
+                status,
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(5), collect)
+            .await
+            .map_err(|_| TransportError::Io)
     }
 
     async fn write(&self, channel: ChannelId, bytes: &[u8]) -> Result<(), TransportError> {
