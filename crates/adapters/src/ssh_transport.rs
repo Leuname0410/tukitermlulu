@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use russh::client::{AuthResult, Config, Handle, Msg};
 use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate};
-use russh::{ChannelMsg, ChannelWriteHalf};
+use russh::{Channel, ChannelMsg, ChannelWriteHalf};
 use russh::{Disconnect, Error as RusshError};
 use tokio::sync::Mutex;
 use tuki_core::host::Host;
@@ -95,6 +95,31 @@ impl RusshTransport {
                 next_channel_id: AtomicU64::new(1),
             }),
         }
+    }
+
+    /// Abre un canal para un subsistema SSH, reteniendo el handle solo durante la apertura.
+    pub(crate) async fn open_subsystem(
+        &self,
+        conn: ConnectionId,
+        name: &str,
+    ) -> Result<Channel<Msg>, TransportError> {
+        let channel = {
+            let connection = {
+                let connections = self.inner.connections.lock().await;
+                Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
+            };
+            let stored = connection.lock().await;
+            stored
+                .handle
+                .channel_open_session()
+                .await
+                .map_err(|_| TransportError::Io)?
+        };
+        channel
+            .request_subsystem(false, name)
+            .await
+            .map_err(|_| TransportError::Io)?;
+        Ok(channel)
     }
 }
 
