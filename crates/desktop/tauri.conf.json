@@ -23,12 +23,39 @@
     "withGlobalTauri": false
   },
   "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi", "appimage", "deb", "dmg", "app"],
+    "publisher": "tukitermlulu",
+    "homepage": "https://github.com/Leuname0410/tukitermlulu",
+    "copyright": "Copyright (c) 2026 Leuname0410",
+    "category": "DeveloperTool",
+    "license": "MPL-2.0",
+    "licenseFile": "../../LICENSE",
+    "shortDescription": "SSH/SFTP terminal client with tabs, sessions and file transfers",
+    "longDescription": "tukitermlulu is an open-source SSH/SFTP desktop client inspired by MobaXterm. It offers tabbed terminals, saved sessions and a built-in file manager.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    }
   }
 }

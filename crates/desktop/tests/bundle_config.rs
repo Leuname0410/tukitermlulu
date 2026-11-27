@@ -47,14 +47,18 @@ fn should_expose_bundle_metadata_when_reading_tauri_config() {
         .expect("shortDescription debe ser texto");
     assert!(!short_description.is_empty());
     assert!(short_description.len() <= 80);
-    assert!(!field(&bundle, &["longDescription"])
-        .as_str()
-        .expect("longDescription debe ser texto")
-        .is_empty());
-    assert!(field(&bundle, &["copyright"])
-        .as_str()
-        .expect("copyright debe ser texto")
-        .contains("2026"));
+    assert!(
+        !field(&bundle, &["longDescription"])
+            .as_str()
+            .expect("longDescription debe ser texto")
+            .is_empty()
+    );
+    assert!(
+        field(&bundle, &["copyright"])
+            .as_str()
+            .expect("copyright debe ser texto")
+            .contains("2026")
+    );
 
     let license_file = field(&bundle, &["licenseFile"])
         .as_str()
@@ -72,7 +76,10 @@ fn should_expose_bundle_metadata_when_reading_tauri_config() {
         field(&bundle, &["windows", "webviewInstallMode", "type"]),
         "downloadBootstrapper"
     );
-    assert_eq!(field(&bundle, &["linux", "deb", "depends"]), &serde_json::json!([]));
+    assert_eq!(
+        field(&bundle, &["linux", "deb", "depends"]),
+        &serde_json::json!([])
+    );
     assert_eq!(field(&bundle, &["macOS", "minimumSystemVersion"]), "10.15");
     assert!(bundle.get("updater").is_none());
     assert!(
