@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type AuthArgs,
@@ -8,6 +9,9 @@ import {
   type PasswordInput,
   type SessionDto,
   type SessionInput,
+  type TransferDto,
+  cancelTransfer,
+  clearTransfers,
   closeTab,
   connect,
   createSession,
@@ -15,9 +19,13 @@ import {
   deleteSession,
   disconnect,
   duplicateSession,
+  enqueueDownload,
+  enqueueUpload,
   isCommandError,
   listFolders,
   listSessions,
+  listTransfers,
+  onTransfers,
   saveFolder,
   terminalResize,
   terminalWrite,
@@ -35,6 +43,8 @@ vi.mock("@tauri-apps/api/core", () => {
 
   return { Channel: MockChannel, invoke: vi.fn() };
 });
+
+vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn() }));
 
 interface ChannelLike {
   onmessage?: (message: unknown) => void;
@@ -102,9 +112,34 @@ const sessionDto: SessionDto = { ...sessionInput, folder: null, id: 1, passwordS
 const folderRaw = { id: 2, name: "producción", parent: null };
 const folderDto: FolderDto = folderRaw;
 
+const transferRaw = {
+  id: 5,
+  connectionId: 1,
+  direction: "download",
+  remote: "/srv/a.txt",
+  local: "downloads/a.txt",
+  state: "running",
+  transferred: 4,
+  total: 10,
+  error: null,
+};
+
+const transferDto: TransferDto = {
+  id: 5,
+  connectionId: 1,
+  direction: "download",
+  remote: "/srv/a.txt",
+  local: "downloads/a.txt",
+  state: "running",
+  transferred: 4,
+  total: 10,
+  error: null,
+};
+
 describe("typed terminal api", () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
+    vi.mocked(listen).mockReset();
   });
 
   it("should invoke connect with two channels and return typed ids when backend connects", async () => {
@@ -283,5 +318,60 @@ describe("typed terminal api", () => {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
       await expect(listSessions()).rejects.toThrow();
     }
+  });
+
+  it("should invoke transfer commands with camelCase arguments when managing transfers", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(7);
+    expect(await enqueueDownload(3, "/srv/a.txt", "C:/downloads")).toBe(7);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(1, "enqueue_download", {
+      connectionId: 3,
+      remote: "/srv/a.txt",
+      localDir: "C:/downloads",
+    });
+
+    vi.mocked(invoke).mockResolvedValueOnce(8);
+    expect(await enqueueUpload(4, "uploads/a.txt", "/srv")).toBe(8);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(2, "enqueue_upload", {
+      connectionId: 4,
+      localPath: "uploads/a.txt",
+      remoteDir: "/srv",
+    });
+
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    await cancelTransfer(7);
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(3, "cancel_transfer", { id: 7 });
+    await clearTransfers();
+    expect(vi.mocked(invoke)).toHaveBeenNthCalledWith(4, "clear_transfers");
+  });
+
+  it("should return parsed transfers when listing them", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([transferRaw]);
+
+    expect(await listTransfers()).toEqual([transferDto]);
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("list_transfers");
+  });
+
+  it("should deliver only well-formed transfer events when listening", async () => {
+    const unlisten = vi.fn();
+    vi.mocked(listen).mockResolvedValueOnce(unlisten);
+    const listener = vi.fn<(jobs: TransferDto[]) => void>();
+
+    const unsubscribe = await onTransfers(listener);
+
+    expect(vi.mocked(listen)).toHaveBeenCalledWith("transfers", expect.any(Function));
+    const handler = vi.mocked(listen).mock.calls[0]?.[1] as unknown as (event: {
+      payload: unknown;
+    }) => void;
+    handler({ payload: [transferRaw] });
+    expect(listener).toHaveBeenCalledWith([transferDto]);
+
+    handler({ payload: { ...transferRaw, total: "diez" } });
+    handler({ payload: { ...transferRaw, state: "unknown" } });
+    handler({ payload: { ...transferRaw, direction: "sideways" } });
+    handler({ payload: null });
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    expect(unlisten).toHaveBeenCalledTimes(1);
   });
 });

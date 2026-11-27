@@ -2,6 +2,7 @@
 
 mod sessions;
 mod terminal;
+mod transfers;
 
 use std::fs;
 
