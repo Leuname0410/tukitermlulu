@@ -2,17 +2,26 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use russh_sftp::client::SftpSession;
 use russh_sftp::client::error::Error as SftpClientError;
+use russh_sftp::client::fs::File;
 use russh_sftp::protocol::StatusCode;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
-use tuki_core::port_errors::FsError;
-use tuki_core::ports::{ConnectionId, FileEntry, FileStat, RemoteFileSystem};
+use tuki_core::port_errors::{FsError, TransferError};
+use tuki_core::ports::{
+    CancelToken, ConnectionId, FileEntry, FileStat, FileTransfer, RemoteFileSystem,
+    TransferProgress,
+};
 use tuki_core::remote_path::RemotePath;
 
 use crate::ssh_transport::RusshTransport;
+
+/// Bloque fijo reutilizado para todas las transferencias (256 KiB).
+const TRANSFER_CHUNK: usize = 256 * 1024;
 
 /// Adaptador SFTP que reutiliza un canal por `ConnectionId`, sin nueva autenticación.
 #[derive(Clone)]
@@ -142,6 +151,213 @@ impl RemoteFileSystem for RusshFileSystem {
             session.create_dir(path.as_str()).await
         })
         .await
+    }
+}
+
+impl FileTransfer for RusshFileSystem {
+    async fn download(
+        &self,
+        conn: ConnectionId,
+        remote: &RemotePath,
+        local: &Path,
+        progress: &dyn TransferProgress,
+        cancel: &CancelToken,
+    ) -> Result<u64, TransferError> {
+        match tokio::fs::metadata(local).await {
+            Ok(_) => return Err(TransferError::AlreadyExists),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(TransferError::LocalIo),
+        }
+        let stat = self.stat(conn, remote).await.map_err(map_fs_error)?;
+        if stat.is_dir {
+            return Err(TransferError::Remote);
+        }
+        let part = local_part(local);
+        let session = self.session(conn).await.map_err(map_fs_error)?;
+        let mut source = session
+            .open(remote.as_str())
+            .await
+            .map_err(map_transfer_error)?;
+        let mut target = tokio::fs::File::create(&part)
+            .await
+            .map_err(|_| TransferError::LocalIo)?;
+
+        let result: Result<u64, TransferError> = async {
+            let transferred =
+                copy_download(&mut source, &mut target, stat.size, progress, cancel).await?;
+            target.flush().await.map_err(|_| TransferError::LocalIo)?;
+            drop(target);
+            tokio::fs::rename(&part, local)
+                .await
+                .map_err(|_| TransferError::LocalIo)?;
+            Ok(transferred)
+        }
+        .await;
+
+        match result {
+            Ok(transferred) => {
+                progress.progress(transferred, Some(stat.size));
+                Ok(transferred)
+            }
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&part).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn upload(
+        &self,
+        conn: ConnectionId,
+        local: &Path,
+        remote: &RemotePath,
+        progress: &dyn TransferProgress,
+        cancel: &CancelToken,
+    ) -> Result<u64, TransferError> {
+        let metadata = tokio::fs::metadata(local).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                TransferError::NotFound
+            } else {
+                TransferError::LocalIo
+            }
+        })?;
+        match self.stat(conn, remote).await {
+            Ok(_) => return Err(TransferError::AlreadyExists),
+            Err(FsError::NotFound) => {}
+            Err(error) => return Err(map_fs_error(error)),
+        }
+        let part = remote_part(remote)?;
+        let session = self.session(conn).await.map_err(map_fs_error)?;
+        let mut source = tokio::fs::File::open(local)
+            .await
+            .map_err(|_| TransferError::LocalIo)?;
+        let mut target = session
+            .create(part.as_str())
+            .await
+            .map_err(map_transfer_error)?;
+
+        let result: Result<u64, TransferError> = async {
+            let transferred =
+                copy_upload(&mut source, &mut target, metadata.len(), progress, cancel).await?;
+            target.close().await.map_err(|_| TransferError::Remote)?;
+            session
+                .rename(part.as_str(), remote.as_str())
+                .await
+                .map_err(map_transfer_error)?;
+            Ok(transferred)
+        }
+        .await;
+
+        match result {
+            Ok(transferred) => {
+                progress.progress(transferred, Some(metadata.len()));
+                Ok(transferred)
+            }
+            Err(error) => {
+                let _ = self
+                    .run(conn, |session| async move {
+                        session.remove_file(part.as_str()).await
+                    })
+                    .await;
+                Err(error)
+            }
+        }
+    }
+}
+
+/// Copia el archivo remoto en bloques hacia el parcial local.
+async fn copy_download(
+    source: &mut File,
+    target: &mut tokio::fs::File,
+    total: u64,
+    progress: &dyn TransferProgress,
+    cancel: &CancelToken,
+) -> Result<u64, TransferError> {
+    let mut buffer = vec![0_u8; TRANSFER_CHUNK];
+    let mut transferred = 0_u64;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(TransferError::Cancelled);
+        }
+        let read = source
+            .read(&mut buffer)
+            .await
+            .map_err(|_| TransferError::Remote)?;
+        if read == 0 {
+            break;
+        }
+        target
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|_| TransferError::LocalIo)?;
+        transferred += read as u64;
+        progress.progress(transferred, Some(total));
+        if cancel.is_cancelled() {
+            return Err(TransferError::Cancelled);
+        }
+    }
+    Ok(transferred)
+}
+
+/// Copia el archivo local en bloques hacia el parcial remoto.
+async fn copy_upload(
+    source: &mut tokio::fs::File,
+    target: &mut File,
+    total: u64,
+    progress: &dyn TransferProgress,
+    cancel: &CancelToken,
+) -> Result<u64, TransferError> {
+    let mut buffer = vec![0_u8; TRANSFER_CHUNK];
+    let mut transferred = 0_u64;
+    loop {
+        if cancel.is_cancelled() {
+            return Err(TransferError::Cancelled);
+        }
+        let read = source
+            .read(&mut buffer)
+            .await
+            .map_err(|_| TransferError::LocalIo)?;
+        if read == 0 {
+            break;
+        }
+        target
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|_| TransferError::Remote)?;
+        transferred += read as u64;
+        progress.progress(transferred, Some(total));
+        if cancel.is_cancelled() {
+            return Err(TransferError::Cancelled);
+        }
+    }
+    Ok(transferred)
+}
+
+/// Nombre del parcial local, añadiendo `.part` sin perder la extensión original.
+fn local_part(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
+/// Nombre del parcial remoto, añadiendo `.part` a la ruta destino.
+fn remote_part(path: &RemotePath) -> Result<RemotePath, TransferError> {
+    RemotePath::new(&format!("{}.part", path.as_str())).map_err(|_| TransferError::Remote)
+}
+
+fn map_fs_error(error: FsError) -> TransferError {
+    match error {
+        FsError::NotFound => TransferError::NotFound,
+        FsError::PermissionDenied => TransferError::PermissionDenied,
+        FsError::Operation => TransferError::Remote,
+    }
+}
+
+fn map_transfer_error(error: SftpClientError) -> TransferError {
+    match map_sftp_error(error) {
+        FsError::NotFound => TransferError::NotFound,
+        FsError::PermissionDenied => TransferError::PermissionDenied,
+        FsError::Operation => TransferError::Remote,
     }
 }
 

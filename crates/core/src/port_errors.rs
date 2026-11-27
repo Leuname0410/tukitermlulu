@@ -32,6 +32,23 @@ pub enum FsError {
     Operation,
 }
 
+/// Fallos al transferir archivos. Los mensajes nunca incluyen rutas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TransferError {
+    #[error("transfer was cancelled")]
+    Cancelled,
+    #[error("remote path not found")]
+    NotFound,
+    #[error("permission denied on the remote file system")]
+    PermissionDenied,
+    #[error("destination already exists")]
+    AlreadyExists,
+    #[error("local file I/O failed")]
+    LocalIo,
+    #[error("remote transfer failed")]
+    Remote,
+}
+
 /// Fallos al cargar una llave privada. El mensaje nunca incluye la ruta ni la passphrase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum KeyError {

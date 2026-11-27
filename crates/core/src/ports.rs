@@ -1,6 +1,9 @@
 //! Puertos del dominio y tipos de apoyo. Sin I/O.
 
 use std::future::Future;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use zeroize::Zeroizing;
 
@@ -8,7 +11,7 @@ use crate::auth::KeyRef;
 use crate::error::DomainError;
 use crate::host::Host;
 use crate::port_errors::{
-    FsError, HostKeyError, KeyError, RepositoryError, SecretError, TransportError,
+    FsError, HostKeyError, KeyError, RepositoryError, SecretError, TransferError, TransportError,
 };
 use crate::remote_path::RemotePath;
 use crate::session::{Folder, FolderId, Session, SessionId};
@@ -237,6 +240,52 @@ pub trait RemoteFileSystem: Send + Sync {
         conn: ConnectionId,
         path: &RemotePath,
     ) -> impl Future<Output = Result<(), FsError>> + Send;
+}
+
+/// Progreso síncrono y barato de una transferencia; lo invoca el adaptador.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait TransferProgress: Send + Sync {
+    /// Informa de los bytes acumulados y del total conocido, si lo hay.
+    fn progress(&self, transferred: u64, total: Option<u64>);
+}
+
+/// Señal de cancelación compartida entre el productor del progreso y la transferencia.
+#[derive(Clone, Default)]
+pub struct CancelToken(Arc<AtomicBool>);
+
+impl CancelToken {
+    /// Solicita la cancelación de la transferencia.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// Indica si se ha solicitado la cancelación.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+/// Copia de archivos por bloques, sin cargarlos completos en memoria.
+#[cfg_attr(any(test, feature = "mocks"), mockall::automock)]
+pub trait FileTransfer: Send + Sync {
+    /// Descarga un archivo remoto a una ruta local que no debe existir.
+    fn download<'a>(
+        &self,
+        conn: ConnectionId,
+        remote: &'a RemotePath,
+        local: &'a Path,
+        progress: &'a dyn TransferProgress,
+        cancel: &'a CancelToken,
+    ) -> impl Future<Output = Result<u64, TransferError>> + Send;
+    /// Sube un archivo local a una ruta remota que no debe existir.
+    fn upload<'a>(
+        &self,
+        conn: ConnectionId,
+        local: &'a Path,
+        remote: &'a RemotePath,
+        progress: &'a dyn TransferProgress,
+        cancel: &'a CancelToken,
+    ) -> impl Future<Output = Result<u64, TransferError>> + Send;
 }
 
 /// Carga de llaves privadas desde el sistema de archivos local.
