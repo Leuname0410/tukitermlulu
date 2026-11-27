@@ -10,9 +10,7 @@ use tuki_core::port_errors::KeyError;
 use tuki_core::ports::KeyFileStore;
 
 fn key_ref(path: &Path) -> KeyRef {
-    let path = path
-        .to_str()
-        .expect("ruta de llave válida en UTF-8");
+    let path = path.to_str().expect("ruta de llave válida en UTF-8");
     KeyRef::new(path).expect("ruta de llave no vacía")
 }
 

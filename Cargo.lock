@@ -5549,6 +5549,7 @@ dependencies = [
  "tokio",
  "tuki-application",
  "tuki-core",
+ "zeroize",
 ]
 
 [[package]]
