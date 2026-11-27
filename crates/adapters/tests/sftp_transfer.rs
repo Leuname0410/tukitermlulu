@@ -420,3 +420,82 @@ async fn should_keep_preexisting_remote_part_when_uploading() {
     assert!(fs.remove(connected.id, &part).await.is_ok());
     assert!(transport.close(connected.id).await.is_ok());
 }
+
+#[tokio::test]
+async fn should_transfer_odd_sized_file_with_identical_content() {
+    let (transport, connected, fs) = fs().await;
+    let dir = tempfile::tempdir().unwrap();
+    let size = 8 * 1024 * 1024 + 123;
+    let source = dir.path().join("odd-source.bin");
+    let downloaded = dir.path().join("odd-downloaded.bin");
+    let target = unique_remote();
+    write_random(&source, size);
+
+    let transferred_up = fs
+        .upload(
+            connected.id,
+            &source,
+            &target,
+            &Progress::new().0,
+            &CancelToken::default(),
+        )
+        .await
+        .unwrap();
+    let transferred_down = fs
+        .download(
+            connected.id,
+            &target,
+            &downloaded,
+            &Progress::new().0,
+            &CancelToken::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(transferred_up, size);
+    assert_eq!(transferred_down, size);
+    assert_eq!(hash(&source), hash(&downloaded));
+    assert!(fs.remove(connected.id, &target).await.is_ok());
+    assert!(transport.close(connected.id).await.is_ok());
+}
+
+#[tokio::test]
+async fn should_report_monotonic_progress_and_final_size_when_transferring_odd_sized_file() {
+    let (transport, connected, fs) = fs().await;
+    let dir = tempfile::tempdir().unwrap();
+    let size = 8 * 1024 * 1024 + 123;
+    let source = dir.path().join("odd-progress.bin");
+    let downloaded = dir.path().join("odd-progress-down.bin");
+    let target = unique_remote();
+    write_random(&source, size);
+
+    let (upload, upload_calls) = Progress::new();
+    fs.upload(
+        connected.id,
+        &source,
+        &target,
+        &upload,
+        &CancelToken::default(),
+    )
+    .await
+    .unwrap();
+    let (download, download_calls) = Progress::new();
+    fs.download(
+        connected.id,
+        &target,
+        &downloaded,
+        &download,
+        &CancelToken::default(),
+    )
+    .await
+    .unwrap();
+
+    for calls in [&upload_calls, &download_calls] {
+        let values = calls.lock().unwrap();
+        assert!(!values.is_empty());
+        assert!(values.windows(2).all(|w| w[1].0 >= w[0].0));
+        assert_eq!(values.last(), Some(&(size, Some(size))));
+    }
+    assert!(fs.remove(connected.id, &target).await.is_ok());
+    assert!(transport.close(connected.id).await.is_ok());
+}
