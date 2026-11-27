@@ -42,10 +42,13 @@ struct StoredConnection {
     username: String,
 }
 
+/// Conexión compartida: cada operación bloquea solo su propio handle, nunca el mapa.
+type SharedConnection = Arc<Mutex<StoredConnection>>;
+
 /// Transporte SSH con keepalive activo y connections indexadas por `ConnectionId`.
 pub struct RusshTransport {
     config: Arc<Config>,
-    connections: Mutex<HashMap<ConnectionId, StoredConnection>>,
+    connections: Mutex<HashMap<ConnectionId, SharedConnection>>,
     next_id: AtomicU64,
 }
 
@@ -78,7 +81,7 @@ impl SshTransport for RusshTransport {
         let handler = FingerprintHandler {
             fingerprint: Arc::clone(&observed),
         };
-        let address = format!("{}:{}", host.hostname.as_str(), host.port.get());
+        let address = (host.hostname.as_str(), host.port.get());
         let handle = russh::client::connect(Arc::clone(&self.config), address, handler)
             .await
             .map_err(|_| TransportError::Connect)?;
@@ -93,7 +96,10 @@ impl SshTransport for RusshTransport {
             handle,
             username: host.username.as_str().to_owned(),
         };
-        self.connections.lock().await.insert(id, stored);
+        self.connections
+            .lock()
+            .await
+            .insert(id, Arc::new(Mutex::new(stored)));
         Ok(Connected { id, fingerprint })
     }
 
@@ -102,10 +108,11 @@ impl SshTransport for RusshTransport {
         conn: ConnectionId,
         credential: Credential,
     ) -> Result<(), TransportError> {
-        let mut connections = self.connections.lock().await;
-        let stored = connections
-            .get_mut(&conn)
-            .ok_or(TransportError::NotConnected)?;
+        let connection = {
+            let connections = self.connections.lock().await;
+            Arc::clone(connections.get(&conn).ok_or(TransportError::NotConnected)?)
+        };
+        let mut stored = connection.lock().await;
         let username = stored.username.clone();
         let result = match credential {
             Credential::Password(password) => {
@@ -154,10 +161,13 @@ impl SshTransport for RusshTransport {
     }
 
     async fn close(&self, conn: ConnectionId) -> Result<(), TransportError> {
-        let mut connections = self.connections.lock().await;
-        let stored = connections
-            .remove(&conn)
-            .ok_or(TransportError::NotConnected)?;
+        let connection = {
+            let mut connections = self.connections.lock().await;
+            connections
+                .remove(&conn)
+                .ok_or(TransportError::NotConnected)?
+        };
+        let stored = connection.lock().await;
         stored
             .handle
             .disconnect(Disconnect::ByApplication, "", "")

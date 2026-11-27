@@ -194,7 +194,10 @@ async fn should_close_another_connection_when_authentication_is_stalled() {
     }
 
     let closed = tokio::time::timeout(Duration::from_secs(3), transport.close(b.id)).await;
-    assert!(matches!(closed, Ok(Ok(()))), "close(B) no debe esperar a authenticate(A)");
+    assert!(
+        matches!(closed, Ok(Ok(()))),
+        "close(B) no debe esperar a authenticate(A)"
+    );
 
     release.send(()).expect("liberar autenticación");
     assert!(auth.await.is_ok());
