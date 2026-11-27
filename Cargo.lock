@@ -5574,8 +5574,15 @@ dependencies = [
 name = "tuki-desktop"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
+ "tuki-adapters",
+ "tuki-application",
+ "tuki-core",
+ "zeroize",
 ]
 
 [[package]]
@@ -6586,6 +6593,7 @@ version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85ccff8a4805aba1eaa4cd4afcd49f7557dd2cf5fd79ffc37f8959466effc5aa"
 dependencies = [
+ "serde",
  "zeroize_derive",
 ]
 

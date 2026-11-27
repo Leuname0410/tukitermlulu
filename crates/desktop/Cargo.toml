@@ -8,6 +8,15 @@ publish.workspace = true
 
 [dependencies]
 tauri = { version = "2", features = [] }
+tuki-core = { path = "../core" }
+tuki-application = { path = "../application" }
+tuki-adapters = { path = "../adapters" }
+tokio = { version = "1", features = ["time"] }
+serde = { version = "1", features = ["derive"] }
+zeroize = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

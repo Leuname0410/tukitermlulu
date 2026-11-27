@@ -401,3 +401,12 @@ async fn should_notify_close_when_connection_is_closed_with_open_pty() {
 
     let _ = wait_for_close(&state).await;
 }
+
+#[tokio::test]
+async fn should_share_connections_when_closing_through_a_transport_clone() {
+    let transport = RusshTransport::new();
+    let clone = transport.clone();
+    let connected = clone.connect(&test_host()).await.unwrap();
+
+    assert!(transport.close(connected.id).await.is_ok());
+}
