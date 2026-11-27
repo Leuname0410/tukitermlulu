@@ -34,3 +34,9 @@ Orden: primero lo que no depende de decisiones externas.
 - **D2:** Windows sin firma en v1. El README explica el aviso de SmartScreen.
 - **D3:** e2e en Windows contra el OpenSSH Server del propio runner.
 - **D4:** mediana de 5 ejecuciones y umbral del 20 % respecto a `docs/kpi-baseline.json`. Solo en PR a `main` y en tags.
+
+## Ajuste por límites de GitHub Actions (2026-11-27)
+El repo es público, así que los runners estándar no consumen minutos de pago. Aun así, se reduce el uso:
+- **Lo pesado corre en local** (máquina del humano, con Docker): `just kpi`, `just coverage` (T-32b) y `just e2e` (T-31a/b).
+- **En CI**, el job `kpi` y el e2e de Linux solo corren en tags `v*` y con `workflow_dispatch`, no en PR. La cobertura no va a CI.
+- **D3 revisado:** el e2e contra OpenSSH de Windows se ejecuta en local solo si el humano acepta instalar el OpenSSH Server de Windows (requiere admin). Si no, Windows se prueba a mano en T-36.
