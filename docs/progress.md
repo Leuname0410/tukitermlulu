@@ -27,6 +27,14 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-12a | APPROVE | 1 | 4 (+lock) | rama `feat/T-12a-import-key-use-case` desde T-11. Primer caso de uso + puerto `KeyFileStore`. MINOR: `has_passphrase=true` si se da passphrase a llave sin cifrar (→ T-18b) |
 | T-12b | APPROVE | 2 | 4 (+lock) | rama `feat/T-12b-key-file-store` desde T-12a. R1 BLOCKER: candidatos leídos sin `Zeroizing`. Windows: ACL heredada de `%APPDATA%` (pendiente de validar). `cfg(unix)` solo verificable en CI |
 
+| T-13a | APPROVE | 1 | 3 | rama `feat/T-13a-ssh-port-handshake` desde T-12b. ADR-005: `connect` → `Connected{id, fingerprint}` sin autenticar; `PtySink` síncrono |
+| T-13b | APPROVE | 2 | 4 (+lock) | rama `feat/T-13b-russh-connect-auth` desde T-13a. R1 MAJOR: mutex global retenido en red; IPv6 con `format!` |
+| T-13c | APPROVE | 1 | 2 | rama `feat/T-13c-russh-pty` desde T-13b. Espera fija de 1 s tras EOF para el exit status. MINOR: `write` copia bytes sin zeroize |
+| T-14 | APPROVE | 1 | 3 (+lock) | rama `feat/T-14-connect-session` desde T-13c. Huella verificada antes de credenciales (`Sequence`). MINOR: `#[rustfmt::skip]`, líneas >150 |
+| T-15a | APPROVE | 2 | 4 (+lock) | rama `feat/T-15a-tauri-terminal-bridge` desde T-14. R1 MAJOR: timeout externo dejaba conexiones huérfanas → movido al handshake del adaptador (20 s) |
+| T-15b | APPROVE | 1 | 4 (+lock) | rama `feat/T-15b-ui-terminal-api` desde T-15a. MINOR: `fingerprint` tipado `string` pero llega `null`; salida no-ArrayBuffer se descarta en silencio |
+| T-16 | APPROVE | 2 | 5 (+lock) | rama `feat/T-16-terminal-view` desde T-15b. R1 MAJOR: doble pegado sin `preventDefault`. Pendiente manual: vim/htop/sudo (tras T-17) |
+
 ## F2: cerrada (2026-11-26)
 T-09 → T-10 → T-11 → T-12a → T-12b. `feat/T-12b-key-file-store` contiene F0 + F1 + F2.
 
