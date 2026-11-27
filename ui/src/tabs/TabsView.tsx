@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { SftpSidebar } from "../sftp/SftpSidebar";
 import { TerminalView } from "../terminal/TerminalView";
 import type { TabController } from "./tabController";
 import type { Tab } from "./tabState";
@@ -82,7 +83,12 @@ export function TabsView({
             hidden={!selected}
           >
             {tab.status.kind === "connected" && controller ? (
-              <TerminalView channelId={tab.status.channelId} source={controller} />
+              <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)" }}>
+                <SftpSidebar connectionId={tab.status.connectionId} />
+                <section aria-label="Terminal">
+                  <TerminalView channelId={tab.status.channelId} source={controller} />
+                </section>
+              </div>
             ) : controller ? (
               <TabPrompt
                 tab={tab}
