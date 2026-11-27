@@ -1,3 +1,196 @@
+//! Exportación de un informe de diagnóstico con redacción de campos sensibles.
+
+use std::collections::VecDeque;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use tauri::{AppHandle, Manager};
+
+use crate::logging::is_sensitive;
+use crate::sftp::downloads_dir;
+use crate::terminal::CommandError;
+
+type Res<T> = Result<T, CommandError>;
+
+const LOG_PREFIX: &str = "tukitermlulu";
+const MAX_LOG_LINES: usize = 2000;
+
+/// Redacta los pares `campo=valor` sensibles conservando el resto del texto.
+fn redact_line(line: &str) -> String {
+    let mut redacted = String::with_capacity(line.len());
+    for part in line.split_inclusive(char::is_whitespace) {
+        let token = part.trim_end_matches(char::is_whitespace);
+        let separator = &part[token.len()..];
+        match token.split_once('=') {
+            Some((name, _)) if is_sensitive(name) => {
+                redacted.push_str(name);
+                redacted.push_str("=[REDACTED]");
+            }
+            _ => redacted.push_str(token),
+        }
+        redacted.push_str(separator);
+    }
+    redacted
+}
+
+/// Defensa en profundidad: vuelve a redactar el informe antes de escribirlo.
+fn redact_report(report: &str) -> String {
+    let mut redacted = String::with_capacity(report.len());
+    for line in report.split_inclusive('\n') {
+        redacted.push_str(&redact_line(line));
+    }
+    redacted
+}
+
+/// Devuelve el `tukitermlulu*.log` con fecha de modificación más reciente.
+fn latest_log(log_dir: &Path) -> io::Result<Option<PathBuf>> {
+    let mut latest: Option<(SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir(log_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !entry.file_type()?.is_file() || !name.starts_with(LOG_PREFIX) || !name.ends_with(".log")
+        {
+            continue;
+        }
+        let modified = entry.metadata()?.modified()?;
+        let replace = latest
+            .as_ref()
+            .is_none_or(|(current, _)| modified > *current);
+        if replace {
+            latest = Some((modified, entry.path()));
+        }
+    }
+    Ok(latest.map(|(_, path)| path))
+}
+
+/// Conserva solo las últimas `max_lines` líneas sin cargar el archivo completo.
+fn read_last_lines(path: &Path, max_lines: usize) -> io::Result<VecDeque<String>> {
+    let mut lines = VecDeque::new();
+    if max_lines == 0 {
+        return Ok(lines);
+    }
+    for line in BufReader::new(File::open(path)?).lines() {
+        if lines.len() == max_lines {
+            lines.pop_front();
+        }
+        lines.push_back(line?);
+    }
+    Ok(lines)
+}
+
+/// Compone el informe a partir del entorno y del último log disponible.
+pub(crate) fn build_report(
+    version: &str,
+    os: &str,
+    arch: &str,
+    log_dir: &Path,
+    max_lines: usize,
+) -> io::Result<String> {
+    let mut report = format!(
+        "Informe de diagnóstico de {LOG_PREFIX}\nversion={version}\nos={os}\narch={arch}\n\nlogs:\n"
+    );
+    match latest_log(log_dir)? {
+        Some(path) => {
+            for line in read_last_lines(&path, max_lines)? {
+                report.push_str(&line);
+                report.push('\n');
+            }
+        }
+        None => report.push_str("(sin logs)\n"),
+    }
+    Ok(redact_report(&report))
+}
+
+/// Convierte días desde el epoch Unix en fecha civil (UTC).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    };
+    (year + i64::from(month <= 2), month as u32, day as u32)
+}
+
+/// Genera la marca temporal `AAAAMMDD-HHMMSS` en UTC.
+fn timestamp(now: SystemTime) -> String {
+    let seconds = now
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let (year, month, day) = civil_from_days((seconds / 86_400) as i64);
+    let clock = seconds % 86_400;
+    format!(
+        "{year:04}{month:02}{day:02}-{:02}{:02}{:02}",
+        clock / 3600,
+        (clock / 60) % 60,
+        clock % 60
+    )
+}
+
+/// Escribe con `create_new`, añadiendo `-1`, `-2`, ... si el nombre ya existe.
+fn write_unique(dir: &Path, stamp: &str, report: &str) -> io::Result<PathBuf> {
+    for suffix in 0u32.. {
+        let name = if suffix == 0 {
+            format!("{LOG_PREFIX}-diagnostico-{stamp}.txt")
+        } else {
+            format!("{LOG_PREFIX}-diagnostico-{stamp}-{suffix}.txt")
+        };
+        let path = dir.join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(report.as_bytes())?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(io::Error::other(
+        "no se pudo asignar un nombre al diagnóstico",
+    ))
+}
+
+/// Genera el informe en Descargas y devuelve la ruta del archivo creado.
+#[tauri::command]
+pub(crate) fn export_diagnostics(app: AppHandle) -> Res<String> {
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de logs"))?;
+    let report = build_report(
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        &log_dir,
+        MAX_LOG_LINES,
+    )
+    .map_err(|_| CommandError::new("io", "No se pudo leer el log de la aplicación"))?;
+    let downloads = downloads_dir(app)
+        .map_err(|_| CommandError::new("io", "No se pudo resolver la carpeta de Descargas"))?;
+    let written = write_unique(
+        Path::new(&downloads),
+        &timestamp(SystemTime::now()),
+        &report,
+    )
+    .map_err(|_| CommandError::new("io", "No se pudo escribir el diagnóstico en Descargas"))?;
+    Ok(written.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File, FileTimes};
@@ -8,15 +201,15 @@ mod tests {
     use super::{build_report, timestamp, write_unique};
 
     fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tuki-diagnostics-{}-{label}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tuki-diagnostics-{}-{label}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
 
     fn write_log(dir: &Path, name: &str, lines: &[String], modified: Duration) {
-        let path = dir.join(name);
-        let mut writer = File::create(&path).unwrap();
+        let mut writer = File::create(dir.join(name)).unwrap();
         for line in lines {
             writeln!(writer, "{line}").unwrap();
         }
@@ -64,11 +257,14 @@ mod tests {
 
         let report = build_report("1", "os", "arch", &dir, 2000).unwrap();
 
-        assert!(report.contains("linea-499"), "{report}");
+        assert!(report.contains("linea-500"), "{report}");
         assert!(report.contains("linea-2499"), "{report}");
-        assert!(!report.contains("linea-498"), "{report}");
+        assert!(!report.contains("linea-499"), "{report}");
         assert_eq!(
-            report.lines().filter(|line| line.starts_with("linea-")).count(),
+            report
+                .lines()
+                .filter(|line| line.starts_with("linea-"))
+                .count(),
             2000
         );
         let _ = fs::remove_dir_all(&dir);

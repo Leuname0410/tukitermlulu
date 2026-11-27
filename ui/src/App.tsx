@@ -5,6 +5,8 @@ import {
   deleteFolder as apiDeleteFolder,
   deleteSession as apiDeleteSession,
   duplicateSession as apiDuplicateSession,
+  exportDiagnostics as apiExportDiagnostics,
+  isCommandError,
   listFolders,
   listSessions,
   saveFolder as apiSaveFolder,
@@ -39,6 +41,9 @@ export default function App(): JSX.Element {
   const [sessions, setSessions] = useState<readonly SessionDto[]>([]);
   const [folders, setFolders] = useState<readonly FolderDto[]>([]);
   const [formState, setFormState] = useState<FormState | null>(null);
+  const [diagnosticResult, setDiagnosticResult] = useState<
+    { kind: "ok"; path: string } | { kind: "error"; message: string } | null
+  >(null);
   const pendingPasswordUpdates = useRef<Map<number, string>>(new Map());
   const [pendingUpdateVersion, setPendingUpdateVersion] = useState(0);
 
@@ -188,6 +193,21 @@ export default function App(): JSX.Element {
     }
   }
 
+  async function handleExportDiagnostics(): Promise<void> {
+    setDiagnosticResult(null);
+    try {
+      const path = await apiExportDiagnostics();
+      setDiagnosticResult({ kind: "ok", path });
+    } catch (error) {
+      const message = isCommandError(error)
+        ? error.message
+        : error instanceof Error
+          ? error.message
+          : "No se pudo exportar el diagnóstico";
+      setDiagnosticResult({ kind: "error", message });
+    }
+  }
+
   const liveIds = new Set(tabs.map((t) => t.id));
   const effectiveActive =
     activeTabId !== null && liveIds.has(activeTabId) ? activeTabId : (tabs.at(-1)?.id ?? null);
@@ -224,7 +244,21 @@ export default function App(): JSX.Element {
           />
         )}
       </aside>
-      <QuickConnect onSubmit={handleConnect} />
+      <div>
+        <QuickConnect onSubmit={handleConnect} />
+        <button
+          type="button"
+          onClick={() => {
+            void handleExportDiagnostics();
+          }}
+        >
+          Exportar diagnóstico
+        </button>
+        {diagnosticResult?.kind === "ok" && (
+          <p role="status">{`Diagnóstico exportado: ${diagnosticResult.path}`}</p>
+        )}
+        {diagnosticResult?.kind === "error" && <p role="alert">{diagnosticResult.message}</p>}
+      </div>
       <TabsView
         tabs={tabs}
         activeTabId={effectiveActive}

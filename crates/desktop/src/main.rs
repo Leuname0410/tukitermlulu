@@ -15,6 +15,7 @@ use tauri::Manager;
 use tuki_adapters::session_repository::SqliteSessionRepository;
 use tuki_adapters::ssh_transport::RusshTransport;
 
+use crate::diagnostics::export_diagnostics;
 use crate::sessions::{
     create_session, delete_folder, delete_session, duplicate_session, list_folders, list_sessions,
     save_folder, update_session,
@@ -82,7 +83,8 @@ fn main() {
             sftp_rename,
             sftp_remove,
             sftp_chmod,
-            downloads_dir
+            downloads_dir,
+            export_diagnostics
         ])
         .run(tauri::generate_context!())
     {

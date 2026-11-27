@@ -500,6 +500,11 @@ export async function downloadsDir(): Promise<string> {
   return readString(await invoke<unknown>("downloads_dir"), "downloadsDir");
 }
 
+/** Genera el informe de diagnóstico en Descargas y devuelve su ruta. */
+export async function exportDiagnostics(): Promise<string> {
+  return readString(await invoke<unknown>("export_diagnostics"), "diagnosticsPath");
+}
+
 /** Suscribe la UI a los cambios de la cola, descartando cargas mal formadas. */
 export async function onTransfers(listener: (jobs: TransferDto[]) => void): Promise<() => void> {
   const unlisten = await listen<unknown>("transfers", (event) => {

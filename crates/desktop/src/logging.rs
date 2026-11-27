@@ -18,7 +18,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 const SENSITIVE_FIELD_NAMES: [&str; 5] =
     ["password", "passphrase", "secret", "private_key", "token"];
 
-fn is_sensitive(name: &str) -> bool {
+pub(crate) fn is_sensitive(name: &str) -> bool {
     let lowered = name.to_ascii_lowercase();
     SENSITIVE_FIELD_NAMES
         .iter()
