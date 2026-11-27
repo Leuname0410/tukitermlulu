@@ -5,7 +5,7 @@ mod terminal;
 use tauri::Manager;
 use tuki_adapters::ssh_transport::RusshTransport;
 
-use crate::terminal::{AppState, connect, disconnect, terminal_resize, terminal_write};
+use crate::terminal::{AppState, close_tab, connect, disconnect, terminal_resize, terminal_write};
 
 fn main() {
     if let Err(error) = tauri::Builder::default()
@@ -18,7 +18,8 @@ fn main() {
             connect,
             terminal_write,
             terminal_resize,
-            disconnect
+            disconnect,
+            close_tab
         ])
         .run(tauri::generate_context!())
     {

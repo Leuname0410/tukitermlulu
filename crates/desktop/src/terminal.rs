@@ -13,6 +13,7 @@ use tuki_adapters::ssh_transport::RusshTransport;
 use tuki_application::connect_session::{
     ConnectError, ConnectOutcome, ConnectRequest, ConnectSession,
 };
+use tuki_application::connect_tab::{ConnectTab, TabId, TabPassphrases};
 use tuki_core::auth::{AuthMethod, KeyRef};
 use tuki_core::host::{Host, Hostname, Port, Username};
 use tuki_core::port_errors::{KeyError, TransportError};
@@ -22,10 +23,11 @@ use tuki_core::ports::{
 use tuki_core::session::{Session, SessionId};
 use zeroize::Zeroizing;
 
-/// Estado compartido por los comandos: transporte y ruta del known_hosts privado.
+/// Estado compartido por los comandos: transporte, known_hosts y passphrases por pestaña.
 pub struct AppState {
     transport: RusshTransport,
     known_hosts_path: PathBuf,
+    passphrases: TabPassphrases,
 }
 
 impl AppState {
@@ -34,6 +36,7 @@ impl AppState {
         Self {
             transport,
             known_hosts_path,
+            passphrases: TabPassphrases::new(),
         }
     }
 }
@@ -236,18 +239,20 @@ fn to_domain(args: &ConnectArgs) -> Result<DomainParts, CommandError> {
 #[tauri::command]
 pub async fn connect(
     state: State<'_, AppState>,
+    tab_id: u64,
     args: ConnectArgs,
     on_output: Channel<InvokeResponseBody>,
     on_closed: Channel<TerminalClosed>,
 ) -> Result<ConnectResponse, CommandError> {
     let (session, pty_size, password, passphrase, approved_fingerprint) = to_domain(&args)?;
     drop(args);
-    let use_case = ConnectSession::new(
+    let connect = ConnectSession::new(
         state.transport.clone(),
         FileHostKeyVerifier::new(state.known_hosts_path.clone()),
         RusshKeyLoader,
         KeyringSecretStore::new("tukitermlulu"),
     );
+    let use_case = ConnectTab::new(connect, &state.passphrases);
     let request = ConnectRequest {
         session: &session,
         password: password.as_ref(),
@@ -260,10 +265,16 @@ pub async fn connect(
         }),
     };
     let outcome = use_case
-        .execute(request)
+        .execute(TabId::new(tab_id), request)
         .await
         .map_err(CommandError::from_connect)?;
     Ok(outcome.into())
+}
+
+/// Olvida la passphrase retenida por la pestaña al cerrarla; no desconecta.
+#[tauri::command]
+pub fn close_tab(state: State<'_, AppState>, tab_id: u64) {
+    state.passphrases.forget(TabId::new(tab_id));
 }
 
 /// Escribe el cuerpo raw de la petición en el PTY indicado por `x-channel-id`.

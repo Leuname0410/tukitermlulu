@@ -1,5 +1,10 @@
 //! Política de retención en memoria de la passphrase de la llave por pestaña.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, PoisonError};
+
+use tuki_core::auth::AuthMethod;
+use tuki_core::port_errors::KeyError;
 use tuki_core::ports::{HostKeyVerifier, KeyLoader, SecretStore, SecretString, SshTransport};
 
 use crate::connect_session::{ConnectError, ConnectOutcome, ConnectRequest, ConnectSession};
@@ -23,7 +28,7 @@ impl TabId {
 /// Passphrases retenidas solo en memoria del backend, nunca persistidas.
 #[derive(Default)]
 pub struct TabPassphrases {
-    entries: std::sync::Mutex<std::collections::HashMap<TabId, SecretString>>,
+    entries: Mutex<HashMap<TabId, SecretString>>,
 }
 
 impl TabPassphrases {
@@ -33,15 +38,24 @@ impl TabPassphrases {
     }
 
     /// Copia la passphrase retenida sin mantener el lock a través de un `await`.
-    fn copy_of(&self, _tab: TabId) -> Option<SecretString> {
-        None
+    fn copy_of(&self, tab: TabId) -> Option<SecretString> {
+        let entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries
+            .get(&tab)
+            .map(|secret| SecretString::new(secret.expose()))
     }
 
     /// Retiene una copia de la passphrase de la pestaña.
-    fn remember(&self, _tab: TabId, _passphrase: SecretString) {}
+    fn remember(&self, tab: TabId, passphrase: SecretString) {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.insert(tab, passphrase);
+    }
 
     /// Olvida la passphrase de la pestaña; al soltarla se hace zeroize.
-    pub fn forget(&self, _tab: TabId) {}
+    pub fn forget(&self, tab: TabId) {
+        let mut entries = self.entries.lock().unwrap_or_else(PoisonError::into_inner);
+        entries.remove(&tab);
+    }
 }
 
 /// Decorador que aplica la política de memoria por pestaña a una conexión.
@@ -64,9 +78,33 @@ where T: SshTransport, V: HostKeyVerifier, K: KeyLoader, S: SecretStore
     pub fn new(connect: ConnectSession<T, V, K, S>, passphrases: &'a TabPassphrases) -> Self { Self { connect, passphrases } }
 
     /// Conecta aplicando la política de retención de passphrase.
-    pub async fn execute(&self, _tab: TabId, request: ConnectRequest<'_>) -> Result<ConnectOutcome, ConnectError> {
-        let _ = &self.passphrases;
-        self.connect.execute(request).await
+    pub async fn execute(&self, tab: TabId, request: ConnectRequest<'_>) -> Result<ConnectOutcome, ConnectError> {
+        let retained = match request.passphrase {
+            Some(_) => None,
+            None => self.passphrases.copy_of(tab),
+        };
+        let effective = request.passphrase.or(retained.as_ref());
+        let ConnectRequest { session, password, approved_fingerprint, pty_size, sink, .. } = request;
+        let uses_key = matches!(&session.auth, AuthMethod::PublicKey { .. });
+        let result = self.connect.execute(ConnectRequest {
+            session,
+            password,
+            passphrase: effective,
+            approved_fingerprint,
+            pty_size,
+            sink,
+        }).await;
+        match &result {
+            Ok(ConnectOutcome::Connected { .. }) if uses_key => {
+                if let Some(secret) = effective {
+                    self.passphrases.remember(tab, SecretString::new(secret.expose()));
+                }
+            }
+            Ok(ConnectOutcome::NeedsPassphrase) => self.passphrases.forget(tab),
+            Err(ConnectError::Key(KeyError::WrongPassphrase)) => self.passphrases.forget(tab),
+            _ => {}
+        }
+        result
     }
 }
 
