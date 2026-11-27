@@ -198,7 +198,8 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::{build_report, timestamp, write_unique};
+    use super::{build_report, export_diagnostics, timestamp, write_unique, Res};
+    use tauri::AppHandle;
 
     fn temp_dir(label: &str) -> PathBuf {
         let dir =
@@ -278,6 +279,29 @@ mod tests {
 
         assert!(report.contains("(sin logs)"), "{report}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_report_without_logs_when_log_directory_is_missing() {
+        let dir = temp_dir("missing");
+        let missing = dir.join("inexistente");
+
+        let report = build_report("1", "os", "arch", &missing, 2000).unwrap();
+
+        assert!(report.contains("(sin logs)"), "{report}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn should_return_a_future_when_export_diagnostics_is_invoked() {
+        fn assert_async_command<F, Fut>(_command: F)
+        where
+            F: FnOnce(AppHandle) -> Fut,
+            Fut: std::future::Future<Output = Res<String>> + Send,
+        {
+        }
+
+        assert_async_command(export_diagnostics);
     }
 
     #[test]
