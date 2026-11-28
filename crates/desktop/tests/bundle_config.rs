@@ -4,12 +4,14 @@ fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn bundle_config() -> serde_json::Value {
+fn tauri_config() -> serde_json::Value {
     let path = manifest_dir().join("tauri.conf.json");
     let contents = std::fs::read_to_string(&path).expect("tauri.conf.json debe existir");
-    let config: serde_json::Value =
-        serde_json::from_str(&contents).expect("tauri.conf.json debe ser JSON válido");
-    config
+    serde_json::from_str(&contents).expect("tauri.conf.json debe ser JSON válido")
+}
+
+fn bundle_config() -> serde_json::Value {
+    tauri_config()
         .get("bundle")
         .expect("debe existir la sección bundle")
         .clone()
@@ -23,6 +25,18 @@ fn field<'a>(config: &'a serde_json::Value, path: &[&str]) -> &'a serde_json::Va
             .unwrap_or_else(|| panic!("falta el campo {}", key));
     }
     current
+}
+
+#[test]
+fn should_allow_tauri_ipc_when_reading_release_csp() {
+    let config = tauri_config();
+    let csp = field(&config, &["app", "security", "csp"])
+        .as_str()
+        .expect("csp debe ser texto");
+
+    assert!(csp.contains("default-src 'self'"));
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+    assert!(csp.contains("connect-src 'self' ipc: http://ipc.localhost"));
 }
 
 #[test]
