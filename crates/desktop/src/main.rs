@@ -7,6 +7,7 @@ mod sftp;
 mod shell_hook;
 mod terminal;
 mod transfers;
+mod ui_log;
 
 use std::fs;
 use std::sync::Arc;

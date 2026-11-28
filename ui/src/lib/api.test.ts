@@ -13,6 +13,7 @@ import {
   type SessionInput,
   type TransferDto,
   cancelTransfer,
+  logUiError,
   clearTransfers,
   closeTab,
   connect,
@@ -490,6 +491,41 @@ describe("typed terminal api", () => {
       vi.mocked(invoke).mockResolvedValueOnce(raw);
       await expect(exportDiagnostics()).rejects.toThrow();
     }
+  });
+
+  it("should invoke log_ui_error with the error message when logging an Error", () => {
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
+
+    expect(() => logUiError("x", new Error("boom"))).not.toThrow();
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("log_ui_error", {
+      scope: "x",
+      message: "Error: boom",
+    });
+  });
+
+  it("should use the command kind and message when logging a CommandError", () => {
+    vi.mocked(invoke).mockReturnValue(new Promise(() => {}));
+
+    logUiError("connect", { kind: "auth_rejected", message: "Credenciales rechazadas" });
+
+    expect(vi.mocked(invoke)).toHaveBeenCalledWith("log_ui_error", {
+      scope: "connect",
+      message: "auth_rejected: Credenciales rechazadas",
+    });
+  });
+
+  it("should swallow a rejected log_ui_error when invoke fails", async () => {
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("ipc caído"));
+    const onUnhandled = vi.fn();
+    process.on("unhandledRejection", onUnhandled);
+
+    expect(() => logUiError("x", "boom")).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(onUnhandled).not.toHaveBeenCalled();
+    process.off("unhandledRejection", onUnhandled);
   });
 
   it("should reject malformed sftp responses when listing and reading home", async () => {
