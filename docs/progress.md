@@ -67,7 +67,27 @@ El `opencode` 1.19.6 del PATH (npm) no puede abrir la DB ya migrada por la 2.4.2
 | T-34b | APPROVE | 2 | 7 | rama `feat/T-34b-diagnostics` desde T-34a. Exportar diagnóstico a Descargas. R1: 2 MAJOR (I/O en el hilo principal, sin carpeta de logs) |
 | T-33a | APPROVE | 1 | 3 | rama `feat/T-33a-bundle` desde T-34b. Bundle de 6 targets; Windows local: NSIS 4.49 MB, MSI 6.44 MB (KPI < 15 MB ✔) |
 
-## F7: en curso. Bloqueada en D1–D4 (`docs/F7-plan.md`)
+| T-33c | APPROVE | 2 | 2 | rama `feat/T-33c-release` desde T-33a. `release.yml` por tag (3 SO, borrador + SHA256SUMS); T-33b integrado (sin firma, D1/D2). R1 MAJOR: faltaba `TAURI_APP_PATH` |
+| T-32a | APPROVE | 2 | 6 | rama `feat/T-32a-kpi`. KPIs de red con mediana de 5 y gate del 20 %. R1: `kpi` solo en tags y dispatch (ahorro de CI) |
+| T-32c | APPROVE | 2 | 3 | rama `feat/T-32c-sftp-pipeline`. SFTP en pipeline (64 × 32 KiB). R1: corrupción si el remoto se encoge + `kpi` medía debug. SFTP 1,31× OpenSSH |
+| T-34c | APPROVE | 1 | 5 | rama `feat/T-34c-ui-log`. `logUiError` → `log_ui_error`. MINOR: saltos de línea en el mensaje (log forging), para la auditoría |
+| T-32b | APPROVE | 1 | 1 | rama `feat/T-32b-coverage`. `just coverage`: core+application 98,1 %, adapters 87,8 % |
+| T-31a | APPROVE | 2 | 8 | rama `feat/T-31a-e2e`. e2e local en Windows. **Bug de producción encontrado: el CSP bloqueaba todo el IPC en release** (corregido + test). Arranque en frío ~390 ms |
+| T-31d | APPROVE | 1 | 3 | rama `feat/T-31d-ram`. `--disable-gpu`: 285 → 177 MB. Meta Windows ≤ 185 MB (humano) |
+| T-31c | APPROVE | 1 | 2 | rama `feat/T-31c-macos-smoke`. Smoke macOS bajo demanda + `docs/qa-macos.md`. MINOR: la RAM de macOS no cuenta los procesos XPC de WebKit |
+| T-35 | APPROVE | 1 | 1 | rama `feat/T-35-readme`. README de portafolio; GIF pendiente (humano) |
+
+T-31b: descartado. El e2e del cliente Windows está en T-31a; los servidores Windows van al checklist manual T-36.
+
+## F7: cerrada (2026-11-27). Rama final `feat/T-35-readme`, sin merge a `main`.
+Pendiente humano (T-36 y otros):
+- QA manual en los 3 SO contra EC2 Linux/Windows: subida arrastrando, PowerShell 5.1/cmd, CPU con `--disable-gpu` (htop, scroll) y `docs/qa-macos.md`;
+- tag `v0.1.0-rc.1` para probar `release.yml`;
+- lanzar a mano el workflow CI (smoke de macOS, e2e de Linux y kpi);
+- grabar `docs/media/demo.gif`;
+- aprobar ADR-001 a 007.
+
+Siguiente: F8 (`docs/F8-plan.md`), luego indexar con codegraph, la revisión de Claude sin contexto y la auditoría de logs; después, la preparación de la beta.
 
 ## F6: cerrada (2026-11-27)
 T-27 → T-28a → T-28b → T-28c → T-28d → T-30 (T-29 descartado por ADR-006). `feat/T-30-follow-terminal` contiene F0–F6 (sin merge a `main`). ADR-006 sigue **Propuesto**.
