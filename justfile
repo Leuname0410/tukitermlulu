@@ -12,6 +12,12 @@ test-int:
     docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
     cargo test -p tuki-adapters --features integration -- --test-threads=1
 
+coverage:
+    docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
+    cargo llvm-cov clean --workspace
+    cargo llvm-cov -p tuki-core -p tuki-application --fail-under-lines 85 --summary-only
+    cargo llvm-cov -p tuki-adapters --features integration --fail-under-lines 70 --summary-only -- --test-threads=1
+
 kpi:
     docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
     cargo test --release -p tuki-adapters --features integration --test kpi -- --ignored --nocapture --test-threads=1
