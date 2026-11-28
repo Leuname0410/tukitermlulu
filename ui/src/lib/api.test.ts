@@ -518,14 +518,16 @@ describe("typed terminal api", () => {
   it("should swallow a rejected log_ui_error when invoke fails", async () => {
     vi.mocked(invoke).mockRejectedValueOnce(new Error("ipc caído"));
     const onUnhandled = vi.fn();
-    process.on("unhandledRejection", onUnhandled);
+    window.addEventListener("unhandledrejection", onUnhandled);
 
-    expect(() => logUiError("x", "boom")).not.toThrow();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(onUnhandled).not.toHaveBeenCalled();
-    process.off("unhandledRejection", onUnhandled);
+    try {
+      expect(() => logUiError("x", "boom")).not.toThrow();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(onUnhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", onUnhandled);
+    }
   });
 
   it("should reject malformed sftp responses when listing and reading home", async () => {

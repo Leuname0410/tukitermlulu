@@ -560,3 +560,24 @@ export function isCommandError(value: unknown): value is CommandError {
     fingerprint && typeof candidate.kind === "string" && typeof candidate.message === "string"
   );
 }
+
+/** Envía un error de la UI al log del backend sin bloquear ni lanzar. */
+export function logUiError(scope: string, error: unknown): void {
+  let message: string;
+  if (isCommandError(error)) {
+    message = `${error.kind}: ${error.message}`;
+  } else if (error instanceof Error) {
+    message = `${error.name}: ${error.message}`;
+  } else {
+    message = String(error);
+  }
+
+  // No hay dónde registrar un fallo del propio registro: ésta es la única
+  // excepción permitida a la regla de loguear todo catch de la UI.
+  void invoke("log_ui_error", { scope, message }).catch(() => {});
+
+  const meta = import.meta as unknown as { env?: UnknownRecord };
+  if (meta.env?.DEV === true) {
+    console.error(scope, error);
+  }
+}

@@ -18,7 +18,7 @@ const LOG_PREFIX: &str = "tukitermlulu";
 const MAX_LOG_LINES: usize = 2000;
 
 /// Redacta los pares `campo=valor` sensibles conservando el resto del texto.
-fn redact_line(line: &str) -> String {
+pub(crate) fn redact_line(line: &str) -> String {
     let mut redacted = String::with_capacity(line.len());
     for part in line.split_inclusive(char::is_whitespace) {
         let token = part.trim_end_matches(char::is_whitespace);

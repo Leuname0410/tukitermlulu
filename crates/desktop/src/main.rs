@@ -29,6 +29,7 @@ use crate::transfers::{
     cancel_transfer, clear_transfers, enqueue_download, enqueue_upload, list_transfers,
     transfer_worker,
 };
+use crate::ui_log::log_ui_error;
 
 fn main() {
     if let Err(error) = tauri::Builder::default()
@@ -85,7 +86,8 @@ fn main() {
             sftp_remove,
             sftp_chmod,
             downloads_dir,
-            export_diagnostics
+            export_diagnostics,
+            log_ui_error
         ])
         .run(tauri::generate_context!())
     {
