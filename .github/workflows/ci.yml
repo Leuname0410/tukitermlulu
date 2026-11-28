@@ -65,3 +65,34 @@ jobs:
           tool: just
 
       - run: just kpi
+
+  e2e-linux:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev libssl-dev build-essential webkit2gtk-driver xvfb
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            e2e/package-lock.json
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - run: cargo install tauri-driver --locked
+
+      - run: npm --prefix ui ci
+
+      - run: xvfb-run just e2e

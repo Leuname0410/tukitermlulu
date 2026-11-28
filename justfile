@@ -12,6 +12,22 @@ test-int:
     docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
     cargo test -p tuki-adapters --features integration -- --test-threads=1
 
+e2e:
+    docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
+    just e2e-build
+    npm --prefix e2e ci
+    npm --prefix e2e test
+
+# El CSP del config bloquea el IPC crudo de terminal_write en el binario release.
+# El override solo afecta al build que usa el e2e, no al repo ni a distribución.
+[windows]
+e2e-build:
+    $env:TAURI_CONFIG = '{"app":{"security":{"csp":"default-src ''self''; style-src ''self'' ''unsafe-inline''; connect-src ''self'' ipc: http://ipc.localhost"}}}'; npm --prefix ui exec -- tauri build --no-bundle
+
+[unix]
+e2e-build:
+    TAURI_CONFIG='{"app":{"security":{"csp":"default-src '\''self'\''; style-src '\''self'\'' '\''unsafe-inline'\''; connect-src '\''self'\'' ipc: http://ipc.localhost"}}}' npm --prefix ui exec -- tauri build --no-bundle
+
 coverage:
     docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
     cargo llvm-cov clean --workspace
