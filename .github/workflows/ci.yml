@@ -96,3 +96,74 @@ jobs:
       - run: npm --prefix ui ci
 
       - run: xvfb-run just e2e
+
+  smoke-macos:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-latest
+    env:
+      TAURI_APP_PATH: ${{ github.workspace }}/crates/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Build macOS app without bundle
+        run: |
+          npm --prefix ui ci
+          npm --prefix ui exec -- tauri build --no-bundle
+
+      - name: 'Smoke: startup, RAM report and shutdown'
+        # WKWebView no tiene WebDriver: solo comprobamos que el binario arranca y sigue vivo.
+        run: |
+          set -uo pipefail
+          LOG_DIR="$HOME/Library/Logs/dev.tukitermlulu.desktop"
+          OUT="$RUNNER_TEMP/tuki-desktop-stdout.log"
+          ./target/release/tuki-desktop > "$OUT" 2>&1 &
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || echo "::warning::No se pudo terminar tuki-desktop ($PID)"; wait "$PID" 2>/dev/null || echo "::notice::tuki-desktop finalizó al recibir la señal"' EXIT
+          sleep 15
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "tuki-desktop sigue vivo tras 15 s (pid $PID)"
+          else
+            echo "::error::tuki-desktop murió durante el arranque (pid $PID)"
+            if [ -d "$LOG_DIR" ]; then
+              echo "::group::Logs de la app en $LOG_DIR"
+              find "$LOG_DIR" -type f -print -exec tail -n 200 {} \;
+              echo "::endgroup::"
+            else
+              echo "::warning::No existe el directorio de logs $LOG_DIR"
+            fi
+            echo "::group::stdout/stderr de tuki-desktop"
+            cat "$OUT"
+            echo "::endgroup::"
+            exit 1
+          fi
+          {
+            echo "### RAM en arranque en macOS (informativo)"
+            echo ""
+            echo "| Proceso | RSS (KB) |"
+            echo "| --- | ---: |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          RSS=$(ps -o rss= -p "$PID" | tr -d ' ')
+          echo "| tuki-desktop ($PID) | ${RSS:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
+          if ! pgrep -P "$PID" > "$RUNNER_TEMP/webkit-children.txt" 2>/dev/null; then
+            echo "::notice::pgrep -P $PID no encontró procesos hijos"
+          fi
+          while read -r CHILD; do
+            [ -n "$CHILD" ] || continue
+            CMD=$(ps -o comm= -p "$CHILD" | tr -d ' ')
+            case "$CMD" in
+              *com.apple.WebKit.*)
+                RSS=$(ps -o rss= -p "$CHILD" | tr -d ' ')
+                echo "| $CMD ($CHILD) | ${RSS:-n/a} |" >> "$GITHUB_STEP_SUMMARY"
+                ;;
+            esac
+          done < "$RUNNER_TEMP/webkit-children.txt"
