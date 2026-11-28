@@ -8,7 +8,7 @@ use std::sync::Arc;
 use russh_sftp::client::RawSftpSession;
 use russh_sftp::client::error::Error as SftpClientError;
 use russh_sftp::protocol::{FileAttributes, OpenFlags, SftpHandle, StatusCode};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tuki_core::port_errors::{FsError, TransferError};
 use tuki_core::ports::{
@@ -436,7 +436,7 @@ impl FileTransfer for RusshFileSystem {
 struct ReadSlot {
     offset: u64,
     len: u32,
-    task: tokio::task::JoinHandle<Result<Vec<u8>, SftpClientError>>,
+    task: tokio::task::JoinHandle<Result<Vec<u8>, TransferError>>,
 }
 
 struct WriteSlot {
@@ -454,7 +454,45 @@ async fn copy_download(
     progress: &dyn TransferProgress,
     cancel: &CancelToken,
 ) -> Result<u64, TransferError> {
-    let chunk_len = read_len.max(1);
+    let session = Arc::clone(session);
+    let handle = handle.clone();
+    copy_download_batches(
+        move |offset, len| {
+            let session = Arc::clone(&session);
+            let handle = handle.clone();
+            async move {
+                session
+                    .read(handle, offset, len)
+                    .await
+                    .map(|data| data.data)
+                    .map_err(map_transfer_error)
+            }
+        },
+        target,
+        total,
+        read_len,
+        progress,
+        cancel,
+    )
+    .await
+}
+
+/// Ventana de lecturas ordenadas por offset, independiente del transporte SFTP.
+async fn copy_download_batches<F, Fut, W>(
+    read_at: F,
+    target: &mut W,
+    total: u64,
+    chunk_len: u32,
+    progress: &dyn TransferProgress,
+    cancel: &CancelToken,
+) -> Result<u64, TransferError>
+where
+    F: Fn(u64, u32) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Vec<u8>, TransferError>> + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    let chunk_len = chunk_len.max(1);
+    let read_at = Arc::new(read_at);
     let mut inflight: VecDeque<ReadSlot> = VecDeque::with_capacity(TRANSFER_WINDOW);
     let mut next_offset = 0_u64;
     let mut transferred = 0_u64;
@@ -475,25 +513,23 @@ async fn copy_download(
             let len = remaining.min(u64::from(chunk_len)) as u32;
             let offset = next_offset;
             next_offset += u64::from(len);
-            let session = Arc::clone(session);
-            let handle = handle.clone();
-            let task = tokio::spawn(async move {
-                session
-                    .read(handle, offset, len)
-                    .await
-                    .map(|data| data.data)
-            });
+            let read_at = Arc::clone(&read_at);
+            let task = tokio::spawn(async move { read_at(offset, len).await });
             inflight.push_back(ReadSlot { offset, len, task });
         }
 
         let Some(slot) = inflight.pop_front() else {
             break;
         };
-        let bytes = slot
-            .task
-            .await
-            .map_err(|_| TransferError::Remote)?
-            .map_err(map_transfer_error)?;
+        let bytes = slot.task.await.map_err(|error| {
+            tracing::warn!(
+                event = "transfer",
+                operation = "download",
+                result = "read_task_failed",
+                error = %error,
+            );
+            TransferError::Remote
+        })??;
         let read = bytes.len();
 
         if read == 0 {
@@ -732,5 +768,96 @@ fn channel_closed(error: &SftpClientError) -> bool {
         | SftpClientError::Timeout
         | SftpClientError::UnexpectedBehavior(_) => true,
         SftpClientError::Limited(_) | SftpClientError::UnexpectedPacket => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    struct SilentProgress;
+
+    impl TransferProgress for SilentProgress {
+        fn progress(&self, _transferred: u64, _total: Option<u64>) {}
+    }
+
+    /// Ejecuta la ventana con lecturas simuladas y devuelve lo escrito localmente.
+    async fn download_with<F, Fut>(
+        total: u64,
+        chunk: u32,
+        read_at: F,
+    ) -> (Result<u64, TransferError>, Vec<u8>)
+    where
+        F: Fn(u64, u32) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Vec<u8>, TransferError>> + Send + 'static,
+    {
+        let mut target = Vec::new();
+        let result = copy_download_batches(
+            read_at,
+            &mut target,
+            total,
+            chunk,
+            &SilentProgress,
+            &CancelToken::default(),
+        )
+        .await;
+        (result, target)
+    }
+
+    #[tokio::test]
+    async fn should_fail_remote_without_looping_when_read_is_empty_before_total() {
+        let download = download_with(256, 64, |offset, len| async move {
+            if offset == 0 {
+                return Ok(vec![b'A'; len as usize]);
+            }
+            Ok(Vec::new())
+        });
+        let (result, target) = tokio::time::timeout(Duration::from_millis(500), download)
+            .await
+            .expect("la descarga debe terminar sin bucle");
+
+        assert!(matches!(result, Err(TransferError::Remote)));
+        assert_eq!(target, vec![b'A'; 64]);
+    }
+
+    #[tokio::test]
+    async fn should_discard_inflight_reads_when_one_returns_empty() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (result, target) = download_with(256, 64, move |offset, len| {
+            let calls = Arc::clone(&calls);
+            async move {
+                let index = calls.fetch_add(1, Ordering::SeqCst);
+                if offset == 64 && index == 0 {
+                    return Ok(Vec::new());
+                }
+                Ok(vec![b'A' + (offset / 64) as u8; len as usize])
+            }
+        })
+        .await;
+
+        assert!(matches!(result, Err(TransferError::Remote)));
+        assert_eq!(target, vec![b'A'; 64]);
+    }
+
+    #[test]
+    fn should_build_kpi_in_release_when_running_the_recipe() {
+        let mut in_kpi = false;
+        let command = include_str!("../../../justfile")
+            .lines()
+            .find(|line| {
+                if line.trim_end() == "kpi:" {
+                    in_kpi = true;
+                    return false;
+                }
+                in_kpi && line.trim_start().starts_with("cargo test")
+            })
+            .expect("cargo test de la receta kpi");
+
+        assert!(
+            command.contains("--release"),
+            "la receta kpi debe medir el perfil release: {command}"
+        );
     }
 }
