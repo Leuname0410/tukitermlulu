@@ -1,5 +1,6 @@
 /// <reference types="@wdio/globals/types" />
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -23,8 +24,54 @@ async function coldStartMs(): Promise<number> {
   return Date.now() - started;
 }
 
-/**Suma las páginas privadas de la app y sus descendientes WebView2 en Windows.*/
-async function ramWindowsMb(): Promise<number> {
+interface RamProcess {
+  pid: number;
+  name: string;
+  type: string;
+  mb: number;
+}
+
+interface RamSnapshot {
+  processes: RamProcess[];
+  groups: Record<string, number>;
+  totalMb: number;
+}
+
+const RAM_GROUPS = ["app", "browser", "renderer", "gpu-process", "utility", "crashpad", "other"];
+
+/**Clasifica cada proceso para poder comparar la app frente a WebView2.*/
+function ramGroup(process: RamProcess): string {
+  if (process.type !== "-") {
+    return RAM_GROUPS.includes(process.type) ? process.type : "other";
+  }
+  const name = process.name.toLowerCase();
+  if (name.includes("tuki-desktop")) {
+    return "app";
+  }
+  if (name.includes("webview") || name.includes("msedge")) {
+    return "browser";
+  }
+  return "other";
+}
+
+function snapshotOf(processes: RamProcess[]): RamSnapshot {
+  const groups: Record<string, number> = {};
+  for (const group of RAM_GROUPS) {
+    groups[group] = 0;
+  }
+  for (const process of processes) {
+    const group = ramGroup(process);
+    groups[group] = (groups[group] ?? 0) + process.mb;
+  }
+  return {
+    processes: [...processes].sort((a, b) => b.mb - a.mb),
+    groups,
+    totalMb: Math.round(processes.reduce((sum, item) => sum + item.mb, 0) * 10) / 10,
+  };
+}
+
+/**Desglosa las páginas privadas de la app y sus descendientes WebView2 en Windows.*/
+async function ramWindowsSnapshot(): Promise<RamSnapshot> {
   const script = [
     "$all = Get-CimInstance Win32_Process",
     "$app = $all | Where-Object { $_.Name -eq 'tuki-desktop.exe' } | Sort-Object CreationDate -Descending | Select-Object -First 1",
@@ -36,20 +83,34 @@ async function ramWindowsMb(): Promise<number> {
     "    if ($p.ParentProcessId -in $tree.ProcessId -and $p -notin $tree) { $tree += $p; $added = $true }",
     "  }",
     "} while ($added)",
-    "$sum = ($tree | Measure-Object -Property PrivatePageCount -Sum).Sum",
-    "[math]::Round($sum / 1MB, 1)",
+    "foreach ($p in $tree) {",
+    "  $cmd = [string]$p.CommandLine",
+    "  $type = '-'",
+    "  if ($cmd -match '--type=([\\w-]+)') { $type = $Matches[1] }",
+    "  elseif ($p.Name -like 'msedgewebview2*') { $type = 'browser' }",
+    "  '{0}|{1}|{2}|{3}' -f $p.ProcessId, $p.Name, $type, [math]::Round($p.PrivatePageCount / 1MB, 1)",
+    "}",
   ].join("\n");
   const { stdout } = await run("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", script]);
-  const value = Number(stdout.trim());
-  if (!Number.isFinite(value)) {
-    throw new Error(`RAM no válida: ${stdout}`);
+  const lines = stdout.trim().split(/\r?\n/).filter((line) => line.length > 0);
+  const processes = lines.map((line) => {
+    const [pid, name, type, mb] = line.split("|");
+    const value = Number(mb);
+    if (pid === undefined || name === undefined || type === undefined || !Number.isFinite(value)) {
+      throw new Error(`RAM no válida: ${line}`);
+    }
+    return { pid: Number(pid), name, type, mb: value };
+  });
+  if (processes.length === 0) {
+    throw new Error(`RAM sin procesos: ${stdout}`);
   }
-  return value;
+  return snapshotOf(processes);
 }
 
-/**Suma el Pss de la app y sus descendientes recorriendo /proc por PPID en Linux.*/
-async function ramLinuxMb(): Promise<number> {
-  const processes = new Map<number, { pid: number; ppid: number; name: string; pss: number }>();
+/**Desglosa el Pss de la app y sus descendientes recorriendo /proc por PPID en Linux.*/
+async function ramLinuxSnapshot(): Promise<RamSnapshot> {
+  type Entry = RamProcess & { ppid: number };
+  const processes = new Map<number, Entry>();
   for (const entry of await fs.readdir("/proc")) {
     if (!/^\d+$/.test(entry)) {
       continue;
@@ -57,17 +118,22 @@ async function ramLinuxMb(): Promise<number> {
     const pid = Number(entry);
     let status: string;
     let rollup: string;
+    let cmdline: string;
     try {
       status = await fs.readFile(`/proc/${pid}/status`, "utf8");
       rollup = await fs.readFile(`/proc/${pid}/smaps_rollup`, "utf8");
+      cmdline = await fs.readFile(`/proc/${pid}/cmdline`, "utf8");
     } catch {
       continue; // Los procesos efímeros desaparecen mientras se recorre /proc.
     }
+    const name = status.match(/^Name:\s+(.+)$/m)?.[1] ?? "";
+    const type = cmdline.match(/--type=([\w-]+)/)?.[1] ?? "-";
     processes.set(pid, {
       pid,
       ppid: Number(status.match(/^PPid:\s+(\d+)$/m)?.[1] ?? 0),
-      name: status.match(/^Name:\s+(.+)$/m)?.[1] ?? "",
-      pss: Number(rollup.match(/^Pss:\s+(\d+)\s+kB$/m)?.[1] ?? 0) / 1024,
+      name,
+      type: type !== "-" ? type : name.startsWith("tuki-desktop") ? "app" : "browser",
+      mb: Number(rollup.match(/^Pss:\s+(\d+)\s+kB$/m)?.[1] ?? 0) / 1024,
     });
   }
   const candidates = [...processes.values()].filter((item) => item.name.startsWith("tuki-desktop"));
@@ -77,7 +143,7 @@ async function ramLinuxMb(): Promise<number> {
   if (root === undefined) {
     throw new Error("No se encontró el proceso de la app");
   }
-  const tree = [root];
+  const tree: Entry[] = [root];
   let added = true;
   while (added) {
     added = false;
@@ -88,15 +154,73 @@ async function ramLinuxMb(): Promise<number> {
       }
     }
   }
-  return Math.round(tree.reduce((sum, item) => sum + item.pss, 0) * 10) / 10;
+  return snapshotOf(tree);
 }
 
-function kpiTable(bootMs: number, ramMb: number | null): string {
+/**Huella visual de la terminal, válida tanto para el renderer DOM como para WebGL.*/
+async function terminalVisualSignature(): Promise<string> {
+  const region = await $('div[role="region"][aria-label="Terminal"]');
+  const png = await region.takeScreenshot();
+  return createHash("sha256").update(png).digest("hex").slice(0, 16);
+}
+
+/**Mide desde que se envían 200 caracteres hasta que cambia el render de la terminal.*/
+async function terminalLatencyMs(): Promise<number> {
+  await browser.execute(() => {
+    const input = document.querySelector('textarea[aria-label="Terminal input"]');
+    if (input instanceof HTMLTextAreaElement) {
+      input.focus();
+    }
+  });
+  const baseline = new Set<string>();
+  for (let sample = 0; sample < 8; sample += 1) {
+    baseline.add(await terminalVisualSignature());
+    await delay(120);
+  }
+  const started = Date.now();
+  await browser.keys("latencia".repeat(25));
+  await browser.waitUntil(async () => !baseline.has(await terminalVisualSignature()), {
+    timeout: 10_000,
+    interval: 50,
+    timeoutMsg: "La terminal no mostró los 200 caracteres",
+  });
+  const elapsed = Date.now() - started;
+  await browser.keys(["\uE009", "u"]); // Ctrl+U: limpia la línea sin ejecutarla.
+  return elapsed;
+}
+
+function ramTable(snapshot: RamSnapshot | null): string {
+  if (snapshot === null) {
+    return "n/d";
+  }
+  const groups = RAM_GROUPS.filter((group) => (snapshot.groups[group] ?? 0) > 0).map(
+    (group) => `| ${group} | ${(snapshot.groups[group] ?? 0).toFixed(1)} MB |`,
+  );
+  const processes = snapshot.processes.map(
+    (item) => `| ${item.name} (${item.pid}) | ${item.type} | ${item.mb.toFixed(1)} MB |`,
+  );
+  return [
+    "| Proceso (PID) | Tipo WebView2 | MB privados |",
+    "| --- | --- | ---: |",
+    ...processes,
+    "",
+    "| Grupo | MB privados |",
+    "| --- | ---: |",
+    ...groups,
+  ].join("\n");
+}
+
+function kpiTable(bootMs: number, snapshot: RamSnapshot | null, latencyMs: number | null): string {
+  const ramMb = snapshot?.totalMb ?? null;
   return [
     "| KPI | Medición | Meta | Resultado |",
     "| --- | ---: | ---: | :---: |",
     `| Arranque en frío (mediana de 3) | ${bootMs} ms | < 1000 ms | ${bootMs < 1000 ? "PASS" : "FAIL"} |`,
     `| RAM en reposo (1 sesión) | ${ramMb === null ? "n/d" : `${ramMb.toFixed(1)} MB`} | < 100 MB | ${ramMb !== null && ramMb < 100 ? "PASS" : "FAIL"} |`,
+    `| Latencia terminal (200 caracteres) | ${latencyMs === null ? "n/d" : `${latencyMs} ms`} | n/d | n/d |`,
+    "",
+    "### Desglose de RAM (Windows: bytes privados; Linux: PSS)",
+    ramTable(snapshot),
   ].join("\n");
 }
 
@@ -150,12 +274,17 @@ async function followTerminalTo(target: string): Promise<void> {
 
 describe("flujo e2e [T-31a]", () => {
   let bootMs: number | undefined;
-  let ramPromise: Promise<number | null> | undefined;
+  let ramPromise: Promise<RamSnapshot | null> | undefined;
+  let latencyMs: number | undefined;
   let fileName: string | undefined;
   let localFile: string | undefined;
 
   after(async () => {
-    const table = kpiTable(bootMs ?? 0, ramPromise === undefined ? null : await ramPromise);
+    const table = kpiTable(
+      bootMs ?? 0,
+      ramPromise === undefined ? null : await ramPromise,
+      latencyMs ?? null,
+    );
     console.log(table);
     const summary = process.env.GITHUB_STEP_SUMMARY;
     if (summary !== undefined) {
@@ -222,7 +351,7 @@ describe("flujo e2e [T-31a]", () => {
       timeoutMsg: "No aparecieron la terminal y el explorador SFTP",
     });
     ramPromise = delay(5_000)
-      .then(() => (process.platform === "win32" ? ramWindowsMb() : ramLinuxMb()))
+      .then(() => (process.platform === "win32" ? ramWindowsSnapshot() : ramLinuxSnapshot()))
       .catch((cause: unknown) => {
         console.warn("[e2e] No se pudo medir la RAM en reposo", cause);
         return null;
@@ -233,6 +362,7 @@ describe("flujo e2e [T-31a]", () => {
     await followTerminalTo("/tmp");
     const follow = await $('//label[contains(., "Seguir terminal")]//input[@type="checkbox"]');
     expect(await follow.isSelected()).toBe(true);
+    latencyMs = await terminalLatencyMs();
 
     fileName = `e2e-${Date.now()}.txt`;
     for (let attempt = 1; attempt <= 3; attempt += 1) {
