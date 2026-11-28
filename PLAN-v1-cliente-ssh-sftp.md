@@ -217,7 +217,7 @@ repo/
 |---|---|
 | Tiempo de conexión (LAN, llave Ed25519) | < 1,5 s |
 | Latencia de tecla a eco (LAN) | < 16 ms p95 |
-| RAM en reposo con 1 sesión abierta | < 100 MB |
+| RAM en reposo con 1 sesión abierta | ≤ 185 MB en Windows (WebView2; decisión del humano del 2026-11-27, ver `docs/ram-report.md`). Linux/macOS: por medir |
 | Throughput SFTP vs `sftp` de OpenSSH | ≥ 80 % |
 | Tamaño del instalador | < 15 MB (< 25 MB el `.dmg` universal) |
 | Arranque en frío | < 1 s |
