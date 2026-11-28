@@ -50,6 +50,13 @@ Si un ticket necesita un puerto nuevo, lo definirá el ticket.
 - Algoritmos heredados (`ssh-rsa` SHA-1, `diffie-hellman-group1`) solo si el ticket lo pide, como opt-in.
 - Permisos de archivos de llaves copiados: 0600 (Unix) / ACL solo del usuario (Windows).
 
+## Logs (obligatorio)
+- **Ningún error capturado sin log.** En Rust, todo `map_err(|_| ..)`, `let _ = <Result>`, `.ok()`, `unwrap_or*` sobre un `Result`, `if let Err` o `match .. Err` registra `tracing::warn!` (recuperable) o `tracing::error!` (falla la operación), con contexto: operación, ids y variante del error.
+- Cada operación relevante (conectar, autenticar, abrir o cerrar un canal, cada operación SFTP, transferencia o túnel) emite `info!` al terminar, con su resultado.
+- **UI:** todo `catch` registra el error con `logUiError` de `ui/src/lib/api.ts` antes de mostrarlo o descartarlo.
+- **Rutas calientes** (bytes del PTY, bloques de transferencia): se loguea el primer fallo y un resumen al final, nunca un log por bloque.
+- Prohibido loguear secretos (contraseñas, passphrases, llaves), bytes de la terminal o contenido de archivos. Las rutas remotas, solo en `debug!`.
+
 ## Terminal y rendimiento
 - Los bytes de la terminal van por **Tauri channels**, nunca por `invoke` ni por estado de React/Zustand.
 - Transferencias SFTP por streaming en chunks; nunca cargues el archivo completo en memoria.
