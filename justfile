@@ -14,7 +14,7 @@ test-int:
 
 kpi:
     docker compose -f tests/fixtures/docker-compose.yml up -d --build --wait
-    cargo test -p tuki-adapters --features integration --test kpi -- --ignored --nocapture --test-threads=1
+    cargo test --release -p tuki-adapters --features integration --test kpi -- --ignored --nocapture --test-threads=1
 
 bundle:
     npm --prefix ui run tauri build{{ if os() == "macos" { " --target universal-apple-darwin" } else { "" } }}

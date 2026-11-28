@@ -537,9 +537,17 @@ where
                 drain_reads(&mut inflight).await;
                 break;
             }
-            next_offset = next_offset.min(slot.offset);
-            eof = false;
-            continue;
+            // El servidor devolvió EOF antes del tamaño anunciado: el remoto se encogió.
+            // Descartamos las lecturas pendientes para no escribir offsets fuera de orden
+            // ni revalidar el mismo offset en un bucle infinito.
+            tracing::warn!(
+                event = "transfer",
+                operation = "download",
+                result = "remote_shrank",
+                offset = slot.offset,
+            );
+            drain_reads(&mut inflight).await;
+            return Err(TransferError::Remote);
         }
 
         if (read as u32) < slot.len {
@@ -774,7 +782,7 @@ fn channel_closed(error: &SftpClientError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     struct SilentProgress;
@@ -824,12 +832,11 @@ mod tests {
 
     #[tokio::test]
     async fn should_discard_inflight_reads_when_one_returns_empty() {
-        let calls = Arc::new(AtomicUsize::new(0));
+        let empty_at_64 = Arc::new(AtomicBool::new(true));
         let (result, target) = download_with(256, 64, move |offset, len| {
-            let calls = Arc::clone(&calls);
+            let empty_at_64 = Arc::clone(&empty_at_64);
             async move {
-                let index = calls.fetch_add(1, Ordering::SeqCst);
-                if offset == 64 && index == 0 {
+                if offset == 64 && empty_at_64.swap(false, Ordering::SeqCst) {
                     return Ok(Vec::new());
                 }
                 Ok(vec![b'A' + (offset / 64) as u8; len as usize])
