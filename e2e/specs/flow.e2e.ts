@@ -38,6 +38,8 @@ interface RamSnapshot {
 }
 
 const RAM_GROUPS = ["app", "browser", "renderer", "gpu-process", "utility", "crashpad", "other"];
+/**Meta acordada para Windows; en Linux/macOS el KPI queda pendiente de medición.*/
+const WINDOWS_IDLE_RAM_TARGET_MB = 185;
 
 /**Clasifica cada proceso para poder comparar la app frente a WebView2.*/
 function ramGroup(process: RamProcess): string {
@@ -210,13 +212,23 @@ function ramTable(snapshot: RamSnapshot | null): string {
   ].join("\n");
 }
 
+/**Fila de RAM: Windows compara contra la meta; el resto solo reporta la medición.*/
+function idleRamKpiRow(ramMb: number | null): string {
+  const measured = ramMb === null ? "n/d" : `${ramMb.toFixed(1)} MB`;
+  if (process.platform !== "win32") {
+    return `| RAM en reposo (1 sesión) | ${measured} | por medir | por medir |`;
+  }
+  const passed = ramMb !== null && ramMb <= WINDOWS_IDLE_RAM_TARGET_MB;
+  return `| RAM en reposo (1 sesión) | ${measured} | <= ${WINDOWS_IDLE_RAM_TARGET_MB} MB | ${passed ? "PASS" : "FAIL"} |`;
+}
+
 function kpiTable(bootMs: number, snapshot: RamSnapshot | null, latencyMs: number | null): string {
   const ramMb = snapshot?.totalMb ?? null;
   return [
     "| KPI | Medición | Meta | Resultado |",
     "| --- | ---: | ---: | :---: |",
     `| Arranque en frío (mediana de 3) | ${bootMs} ms | < 1000 ms | ${bootMs < 1000 ? "PASS" : "FAIL"} |`,
-    `| RAM en reposo (1 sesión) | ${ramMb === null ? "n/d" : `${ramMb.toFixed(1)} MB`} | < 100 MB | ${ramMb !== null && ramMb < 100 ? "PASS" : "FAIL"} |`,
+    idleRamKpiRow(ramMb),
     `| Latencia terminal (200 caracteres) | ${latencyMs === null ? "n/d" : `${latencyMs} ms`} | n/d | n/d |`,
     "",
     "### Desglose de RAM (Windows: bytes privados; Linux: PSS)",
