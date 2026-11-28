@@ -23,7 +23,7 @@ async function coldStartMs(): Promise<number> {
   return Date.now() - started;
 }
 
-/**Suma el working set de la app y sus descendientes WebView2 en Windows.*/
+/**Suma las páginas privadas de la app y sus descendientes WebView2 en Windows.*/
 async function ramWindowsMb(): Promise<number> {
   const script = [
     "$all = Get-CimInstance Win32_Process",
@@ -36,7 +36,7 @@ async function ramWindowsMb(): Promise<number> {
     "    if ($p.ParentProcessId -in $tree.ProcessId -and $p -notin $tree) { $tree += $p; $added = $true }",
     "  }",
     "} while ($added)",
-    "$sum = ($tree | Measure-Object -Property WorkingSetSize -Sum).Sum",
+    "$sum = ($tree | Measure-Object -Property PrivatePageCount -Sum).Sum",
     "[math]::Round($sum / 1MB, 1)",
   ].join("\n");
   const { stdout } = await run("powershell.exe", ["-NoLogo", "-NoProfile", "-Command", script]);
@@ -47,30 +47,33 @@ async function ramWindowsMb(): Promise<number> {
   return value;
 }
 
-/**Suma el RSS de la app y sus descendientes recorriendo /proc por PPID en Linux.*/
+/**Suma el Pss de la app y sus descendientes recorriendo /proc por PPID en Linux.*/
 async function ramLinuxMb(): Promise<number> {
-  const processes = new Map<number, { ppid: number; name: string; rss: number }>();
+  const processes = new Map<number, { pid: number; ppid: number; name: string; pss: number }>();
   for (const entry of await fs.readdir("/proc")) {
     if (!/^\d+$/.test(entry)) {
       continue;
     }
     const pid = Number(entry);
     let status: string;
+    let rollup: string;
     try {
       status = await fs.readFile(`/proc/${pid}/status`, "utf8");
+      rollup = await fs.readFile(`/proc/${pid}/smaps_rollup`, "utf8");
     } catch {
       continue; // Los procesos efímeros desaparecen mientras se recorre /proc.
     }
     processes.set(pid, {
+      pid,
       ppid: Number(status.match(/^PPid:\s+(\d+)$/m)?.[1] ?? 0),
       name: status.match(/^Name:\s+(.+)$/m)?.[1] ?? "",
-      rss: Number(status.match(/^VmRSS:\s+(\d+)$/m)?.[1] ?? 0) / 1024,
+      pss: Number(rollup.match(/^Pss:\s+(\d+)\s+kB$/m)?.[1] ?? 0) / 1024,
     });
   }
-  const root = [...processes.values()]
-    .filter((item) => item.name.startsWith("tuki-desktop"))
-    .sort((a, b) => b.ppid - a.ppid)
-    .at(0);
+  const candidates = [...processes.values()].filter((item) => item.name.startsWith("tuki-desktop"));
+  const root =
+    candidates.find((item) => !candidates.some((other) => other.ppid === item.pid)) ??
+    candidates.at(0);
   if (root === undefined) {
     throw new Error("No se encontró el proceso de la app");
   }
@@ -79,13 +82,13 @@ async function ramLinuxMb(): Promise<number> {
   while (added) {
     added = false;
     for (const item of processes.values()) {
-      if (!tree.includes(item) && tree.some((parent) => parent.ppid === item.ppid)) {
+      if (!tree.includes(item) && tree.some((parent) => parent.pid === item.ppid)) {
         tree.push(item);
         added = true;
       }
     }
   }
-  return Math.round(tree.reduce((sum, item) => sum + item.rss, 0) * 10) / 10;
+  return Math.round(tree.reduce((sum, item) => sum + item.pss, 0) * 10) / 10;
 }
 
 function kpiTable(bootMs: number, ramMb: number | null): string {
